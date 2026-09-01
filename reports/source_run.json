@@ -1,0 +1,17 @@
+{
+  "source": "notebook304d09e00b.ipynb",
+  "provenance": "Values read from saved outputs; not rerun",
+  "baseline_mean_ndcg_at_10": 0.8415,
+  "evaluation_query_count": 1000,
+  "seed": 42,
+  "prepared_triplets": 11833,
+  "fine_tuning_present": false,
+  "final_cell_error": "NameError: name 'train_loader' is not defined",
+  "source_output_excerpt": [
+    {
+      "name": "stdout",
+      "output_type": "stream",
+      "text": "Frozen MiniLM Mean NDCG@10: 0.8415\n"
+    }
+  ]
+}
