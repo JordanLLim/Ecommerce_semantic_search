@@ -1,0 +1,48 @@
+{
+  "provenance": "Recorded outputs from amazon-ranking.ipynb; not rerun in this repository refactor",
+  "dataset": {
+    "us_rows": 1818825,
+    "queries": 97345,
+    "products": 1215851,
+    "small_train_pairs": 419653,
+    "small_test_pairs": 181701
+  },
+  "validation": {
+    "seed": 42,
+    "queries": 2089,
+    "pairs": 42185,
+    "training_queries": 18799,
+    "training_pairs": 377468,
+    "training_triplets": 10664,
+    "experiment_a": {"learning_rate": 0.00002, "loss": 0.1279},
+    "experiment_b": {"learning_rate": 0.00001, "loss": 0.1300},
+    "candidate_metrics": [
+      {"model": "TF-IDF", "ndcg@10": 0.810273, "p@1": 0.557683, "p@5": 0.511441, "recall@10": 0.641731, "mrr@10": 0.700712},
+      {"model": "Frozen MiniLM", "ndcg@10": 0.833919, "p@1": 0.627573, "p@5": 0.546865, "recall@10": 0.670976, "mrr@10": 0.753809},
+      {"model": "Experiment A", "ndcg@10": 0.845803, "p@1": 0.649593, "p@5": 0.566108, "recall@10": 0.685205, "mrr@10": 0.770350},
+      {"model": "Experiment B", "ndcg@10": 0.843344, "p@1": 0.649593, "p@5": 0.564864, "recall@10": 0.678666, "mrr@10": 0.769849}
+    ],
+    "a_minus_frozen_ndcg": {"mean": 0.011884, "ci_95": [0.008356, 0.015558]}
+  },
+  "controlled_retrieval": {
+    "queries": 200,
+    "products": 10000,
+    "required_products": 3941,
+    "random_products": 6059,
+    "metrics": [
+      {"model": "TF-IDF", "known_E_recall@10": 0.428269, "known_E_recall@50": 0.722351, "known_E_hit@10": 0.800},
+      {"model": "Frozen MiniLM", "known_E_recall@10": 0.508438, "known_E_recall@50": 0.803575, "known_E_hit@10": 0.885},
+      {"model": "Experiment A", "known_E_recall@10": 0.505550, "known_E_recall@50": 0.796808, "known_E_hit@10": 0.880},
+      {"model": "Experiment B", "known_E_recall@10": 0.518334, "known_E_recall@50": 0.819388, "known_E_hit@10": 0.890}
+    ]
+  },
+  "pool_robustness": {
+    "pool_seeds": [17, 43, 97],
+    "unique_products": 22025,
+    "average_metrics": [
+      {"model": "Frozen MiniLM", "known_E_recall@10": 0.508334, "known_E_recall@50": 0.806027, "known_E_hit@10": 0.876667},
+      {"model": "Experiment A", "known_E_recall@10": 0.508856, "known_E_recall@50": 0.802284, "known_E_hit@10": 0.886667},
+      {"model": "Experiment B", "known_E_recall@10": 0.524236, "known_E_recall@50": 0.822343, "known_E_hit@10": 0.893333}
+    ]
+  }
+}
