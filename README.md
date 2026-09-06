@@ -51,7 +51,9 @@ I use the name **known-E recall** because ESCI does not label every randomly sam
 | `src/lexical.py` | TF-IDF baseline |
 | `src/evaluation.py` | NDCG, P@K, Recall, MRR and paired bootstrap |
 | `src/retrieval.py` | Controlled pools and known-E metrics |
+| `src/search.py` | Persisted FAISS index loading and search |
 | `src/api.py` | FastAPI inference service |
+| `scripts/build_index.py` | Product embedding and FAISS index builder |
 | `tests/test_pipeline.py` | Offline synthetic tests |
 | `notebooks/amazon_ranking.ipynb` | Compact baseline walkthrough |
 
@@ -80,6 +82,30 @@ Model downloads require internet access or a local Hugging Face cache. GPU train
 
 ## API
 
+Build a small exact-search index first. Use `--model` with a local Experiment B
+checkpoint when it is available.
+
+```bash
+python scripts/build_index.py \
+  --catalog data/raw/shopping_queries_dataset_products.parquet \
+  --limit 10000 \
+  --index-type flat \
+  --output-dir artifacts
+```
+
+For a larger catalog, IVF avoids comparing the query with every product. `nprobe`
+controls the speed-recall trade-off by setting how many clusters are searched.
+
+```bash
+python scripts/build_index.py \
+  --catalog data/raw/shopping_queries_dataset_products.parquet \
+  --limit 50000 \
+  --index-type ivf \
+  --nlist 224 \
+  --nprobe 16 \
+  --output-dir artifacts
+```
+
 ```bash
 uvicorn src.api:app --host 0.0.0.0 --port 8000
 ```
@@ -90,13 +116,26 @@ curl -X POST http://localhost:8000/rank \
   -d '{"query":"quiet cooling fan","products":["USB cabinet fan","Tower fan with remote","Automotive cooling fan assembly"],"top_k":3}'
 ```
 
-Set `MODEL_PATH` to use a local fine-tuned checkpoint. `/health` does not load the model, keeping startup observable.
+`/rank` orders a supplied product list. `/search` retrieves products from the
+persisted index:
+
+```bash
+curl -X POST http://localhost:8000/search \
+  -H "Content-Type: application/json" \
+  -d '{"query":"quiet cooling fan","top_k":10}'
+```
+
+Set `MODEL_PATH` to use a local fine-tuned checkpoint and `ARTIFACT_DIR` when the
+index is stored elsewhere. The same model must be used to build and query an index.
+`/health` reports whether the rank model and search index have been loaded.
 
 ## Docker
 
 ```bash
 docker build -t amazon-semantic-ranker .
-docker run --rm -p 8000:8000 amazon-semantic-ranker
+docker run --rm -p 8000:8000 \
+  -v "$(pwd)/artifacts:/app/artifacts:ro" \
+  amazon-semantic-ranker
 ```
 
 For a fixed deployment, set `MODEL_PATH` to a saved local checkpoint instead of downloading a model at startup.
@@ -121,4 +160,5 @@ The values in the JSON report were copied from saved notebook outputs. They were
 - One sampled Exact/Irrelevant pair per eligible query; no hard-negative mining.
 - One epoch and two learning rates are not exhaustive tuning.
 - The 10K pool is a controlled stress test, not full-catalog evaluation.
+- Flat and IVF serving paths still need latency and recall measurements on the target machine.
 - Offline NDCG does not directly measure clicks or conversion.
