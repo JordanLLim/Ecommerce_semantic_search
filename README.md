@@ -1,87 +1,124 @@
-# Amazon Shopping Query Ranking
+# Amazon Semantic Search and Product Ranking
 
-A title-only semantic ranking baseline using the Amazon Shopping Queries (ESCI) dataset and frozen all-MiniLM-L6-v2 embeddings.
+Experiments with lexical and semantic product ranking on the Amazon Shopping Queries ESCI dataset. The project compares TF-IDF with MiniLM, fine-tunes the encoder with triplet loss, and tests both candidate ranking and retrieval from a larger product pool.
 
-## Current scope
+> Independent portfolio project; not affiliated with Amazon. Raw data, credentials and model weights are not committed.
 
-The notebook ranks the **provided products for each query**. It does not search the full product catalog. It includes data checks, a frozen baseline, per-query error analysis, and training-triplet preparation.
+## Results
 
-Fine-tuning, a cross-encoder reranker, an ANN index, and deployment are not implemented.
+### Candidate ranking
 
-## Recorded result
+All methods use the same 2,089 held-out validation queries and 42,185 supplied query-product pairs. Graded relevance is Exact=3, Substitute=2, Complement=1 and Irrelevant=0.
 
-The uploaded source notebook reports **mean NDCG@10 = 0.8415** on 1,000 sampled US small-version test queries (seed 42). This is a historical output, not a fresh run of this refactor. See `reports/source_run.json`.
+| Model | NDCG@10 | P@1 | P@5 | Recall@10 | MRR@10 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| TF-IDF | 0.8103 | 0.5577 | 0.5114 | 0.6417 | 0.7007 |
+| Frozen MiniLM | 0.8339 | 0.6276 | 0.5469 | 0.6710 | 0.7538 |
+| Fine-tuned A, lr=2e-5 | **0.8458** | **0.6496** | **0.5661** | **0.6852** | **0.7704** |
+| Fine-tuned B, lr=1e-5 | 0.8433 | **0.6496** | 0.5649 | 0.6787 | 0.7698 |
 
-- Relevance values: Exact = 3, Substitute = 2, Complement = 1, Irrelevant = 0.
-- NDCG uses scikit-learn's linear gains and default tie handling.
-- Scores are averaged equally across queries. All-zero relevance groups receive zero.
-- This is a project-specific setup, not a claim of an official benchmark score.
-- The original notebook prepared 11,833 triplets. It did not train a model.
-- Exact dependency versions, model revision, sampled IDs and a checkpoint were not saved in the source notebook, so exact reproduction is not guaranteed.
+Experiment A improved NDCG@10 by **0.0119** over the frozen model. The paired bootstrap 95% interval was **[0.0084, 0.0156]**. Across individual queries, 51.89% improved, 41.41% worsened and 6.70% were unchanged.
 
-## Run locally
+### Controlled 10K-product retrieval
 
-Use Python 3.11 in a virtual environment:
+Candidate ranking is not catalog retrieval. A separate test sampled 200 validation queries, retained all 3,941 judged products and added 6,059 label-free catalog distractors.
 
-```bash
-python -m venv .venv
-# Activate the environment for your operating system.
-pip install -r requirements.txt
-jupyter lab
-```
+| Model | Known-E Recall@10 | Known-E Recall@50 | Known-E Hit@10 |
+| --- | ---: | ---: | ---: |
+| TF-IDF | 0.4283 | 0.7224 | 0.800 |
+| Frozen MiniLM | 0.5084 | 0.8036 | 0.885 |
+| Fine-tuned A | 0.5056 | 0.7968 | 0.880 |
+| Fine-tuned B | **0.5183** | **0.8194** | **0.890** |
 
-Open `notebooks/amazon_ranking.ipynb` and run from the top.
+I use the name **known-E recall** because ESCI does not label every randomly sampled catalog product. With pool seeds 17, 43 and 97, Experiment B averaged 0.5242 Recall@10 and 0.8223 Recall@50. Full values are in [`reports/experiment_results.json`](reports/experiment_results.json).
 
-Place these files in `data/raw/` or set `AMAZON_DATA_DIR` to their folder:
+## Leakage controls
 
-- shopping_queries_dataset_examples.parquet
-- shopping_queries_dataset_products.parquet
+- Train, validation and test boundaries are defined by **query ID**, not rows.
+- TF-IDF vocabulary is fit only on fit-split product titles.
+- Validation queries are excluded before triplet construction.
+- Models use identical evaluation pairs and deterministic tie handling.
+- The initially inspected test sample is documented as exposed and is not used for model selection.
 
-Use the Amazon Shopping Queries dataset already attached to your Kaggle notebook. Data is not included here; check its redistribution terms before uploading any data or derived text. Model loading requires internet access or a local model cache.
-
-## Run on Kaggle
-
-Upload the project ZIP as a private input, extract it into a writable working folder, and set `AMAZON_PROJECT_ROOT` to the extracted `amazon-ranking` directory before the setup cell. Keep the original ESCI dataset attached.
-
-The notebook defaults to the original Kaggle dataset path when running under `/kaggle`; override `AMAZON_DATA_DIR` if your attachment uses a different path. Outputs default to `/kaggle/working/amazon-ranking-outputs`.
-
-Downloading only the notebook is not enough: its `src/` folder is required. After a successful run, download the outputs and save a Kaggle version that includes them; writing to the session filesystem is not a durable backup.
-
-## Files
+## Layout
 
 | Path | Purpose |
 | --- | --- |
-| notebooks/amazon_ranking.ipynb | Exploration, experiment settings and interpretation |
-| src/data.py | Loading, merge checks, split and evaluation sampling |
-| src/ranking.py | Candidate scoring with normalized embeddings |
-| src/evaluation.py | NDCG and per-query evaluation |
-| src/triplets.py | Training-only triplet preparation and dataset adapter |
-| tests/test_pipeline.py | Offline tests with small synthetic data |
-| reports/source_run.json | Historical values read from the uploaded notebook |
-| SPLIT_GUIDE.md | Original-cell mapping and changes |
+| `src/data.py` | Validated loading, query-level splits, relevance mapping |
+| `src/triplets.py` | Deterministic Exact/Irrelevant triplets |
+| `src/training.py` | Configured cosine-triplet training loop |
+| `src/ranking.py` | Candidate and online ranking |
+| `src/lexical.py` | TF-IDF baseline |
+| `src/evaluation.py` | NDCG, P@K, Recall, MRR and paired bootstrap |
+| `src/retrieval.py` | Controlled pools and known-E metrics |
+| `src/api.py` | FastAPI inference service |
+| `tests/test_pipeline.py` | Offline synthetic tests |
+| `notebooks/amazon_ranking.ipynb` | Compact baseline walkthrough |
 
-The notebook writes sampled query IDs, configuration, package versions, per-query metrics, candidate scores and triplets into the output directory. These outputs are ignored by Git because they may contain dataset text.
+## Data
 
-## Validation
+Place the Amazon Shopping Queries files below in `data/raw/`, or set `AMAZON_DATA_DIR`:
+
+- `shopping_queries_dataset_examples.parquet`
+- `shopping_queries_dataset_products.parquet`
+
+The full US merge contained 1,818,825 rows, 97,345 queries and 1,215,851 products. The main experiment used the provided small-version split.
+
+## Setup and tests
+
+Python 3.11 is recommended.
 
 ```bash
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
 python -m unittest discover -s tests -v
+jupyter lab
 ```
 
-Offline tests cover helper logic without downloading a model. A full dataset/model run is still required after this refactor. The requirements file is not a tested lockfile.
+Model downloads require internet access or a local Hugging Face cache. GPU training is practical on Kaggle or Colab; utilities and synthetic tests run offline.
 
-## Before fine-tuning
+## API
 
-Split the training queries into train/validation groups before building training triplets. Use validation for sampling choices, hyperparameters and error-driven iteration. Do not feed inspected test examples into training.
+```bash
+uvicorn src.api:app --host 0.0.0.0 --port 8000
+```
 
-The existing test set has already been inspected for errors. Document that exposure; do not describe it as an untouched final holdout. Future comparisons must use the same candidate set, query IDs and gain mapping. Add a simple lexical or random baseline before interpreting how strong 0.8415 is.
+```bash
+curl -X POST http://localhost:8000/rank \
+  -H "Content-Type: application/json" \
+  -d '{"query":"quiet cooling fan","products":["USB cabinet fan","Tower fan with remote","Automotive cooling fan assembly"],"top_k":3}'
+```
 
-## Next work
+Set `MODEL_PATH` to use a local fine-tuned checkpoint. `/health` does not load the model, keeping startup observable.
 
-- Query-level validation split and a training loop.
-- Saved checkpoints and baseline/fine-tuned comparisons.
-- Lexical baseline and controlled ablations.
-- Full-catalog retrieval evaluated separately from candidate ranking.
+## Docker
 
-This repository is an independent dataset project, not an Amazon affiliation.
+```bash
+docker build -t amazon-semantic-ranker .
+docker run --rm -p 8000:8000 amazon-semantic-ranker
+```
 
+For a fixed deployment, set `MODEL_PATH` to a saved local checkpoint instead of downloading a model at startup.
+
+## Reproducing experiments
+
+1. Load the US merge and create the provided small split.
+2. Split training rows by query ID with `split_train_validation`.
+3. Fit TF-IDF only on unique fit-split titles.
+4. Build triplets only from the fit split.
+5. Train independent A/B models from the same initialization.
+6. Score the fixed validation pairs and compute candidate metrics.
+7. Align queries and run a paired bootstrap.
+8. Build controlled pools retaining every judged product.
+9. Repeat with multiple distractor seeds.
+
+The values in the JSON report were copied from saved notebook outputs. They were not rerun during this refactor because the raw data and checkpoints are not committed.
+
+## Limitations
+
+- Title-only representation; descriptions and structured attributes were excluded.
+- One sampled Exact/Irrelevant pair per eligible query; no hard-negative mining.
+- One epoch and two learning rates are not exhaustive tuning.
+- The 10K pool is a controlled stress test, not full-catalog evaluation.
+- Offline NDCG does not directly measure clicks or conversion.

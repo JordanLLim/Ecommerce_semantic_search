@@ -1,4 +1,4 @@
-"""Load the US subset without multiplying query-product pairs."""
+"""Data loading and query-level splitting utilities."""
 from pathlib import Path
 import pandas as pd
 
@@ -35,12 +35,33 @@ def split_small_data(df):
         raise ValueError("Query IDs overlap between train and test.")
     return train, test
 
+def split_train_validation(train, validation_fraction=0.10, seed=42):
+    """Split training data by query ID to prevent query leakage."""
+    if train.empty or not train["split"].eq("train").all():
+        raise ValueError("Expected non-empty rows from the training split.")
+    if not 0 < validation_fraction < 1:
+        raise ValueError("validation_fraction must be between zero and one.")
+    query_ids = train["query_id"].drop_duplicates()
+    validation_ids = query_ids.sample(frac=validation_fraction, random_state=seed)
+    validation = train.loc[train["query_id"].isin(validation_ids)].copy()
+    fit = train.loc[~train["query_id"].isin(validation_ids)].copy()
+    if set(fit["query_id"]) & set(validation["query_id"]):
+        raise AssertionError("Query leakage between fit and validation splits.")
+    return fit, validation
+
+def add_relevance(frame):
+    """Return a copy with graded ESCI relevance values."""
+    result = frame.copy()
+    result["relevance"] = result["esci_label"].map(RELEVANCE)
+    if result["relevance"].isna().any():
+        raise ValueError("Unknown ESCI label.")
+    return result
+
 def sample_evaluation(test, n_queries=1000, seed=42):
     if n_queries < 1 or test.empty:
         raise ValueError("Evaluation requires queries.")
     ids = test["query_id"].drop_duplicates().sample(
         n=min(n_queries, test["query_id"].nunique()), random_state=seed)
     result = test.loc[test["query_id"].isin(ids)].copy()
-    result["relevance"] = result["esci_label"].map(RELEVANCE)
+    result = add_relevance(result)
     return result, ids
-
