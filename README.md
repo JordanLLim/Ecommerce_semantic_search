@@ -32,6 +32,23 @@ Candidate ranking is not catalog retrieval. A separate test sampled 200 validati
 
 I use the name **known-E recall** because ESCI does not label every randomly sampled catalog product. With pool seeds 17, 43 and 97, Experiment B averaged 0.5242 Recall@10 and 0.8223 Recall@50. Full values are in [`reports/experiment_results.json`](reports/experiment_results.json).
 
+### FAISS scalability benchmark
+
+The serving benchmark compares IVF approximate search with exact `IndexFlatIP` search using normalized MiniLM embeddings. It uses 200 sampled Amazon queries and reports ANN Recall@10 as overlap with Flat's exact top-10 neighbors. This is an index approximation metric, not ESCI relevance or model accuracy. Embedding time is excluded so the latency numbers isolate FAISS search behavior.
+
+| Catalog | Index | nlist | nprobe | ANN Recall@10 vs Flat | Mean latency/query | Speedup vs Flat |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 50K | Flat | - | - | 1.0000 | 2.140 ms | 1.0x |
+| 50K | IVF | 224 | 64 | 0.9550 | 0.645 ms | 3.3x |
+| 500K | Flat | - | - | 1.0000 | 29.614 ms | 1.0x |
+| 500K | IVF | 707 | 96 | 0.9475 | 4.161 ms | 7.1x |
+| **500K** | **IVF** | **707** | **104** | **0.9515** | **4.479 ms** | **6.6x** |
+| 500K | IVF | 707 | 128 | 0.9570 | 5.536 ms | 5.3x |
+
+For the 500K benchmark, `nprobe=104` was the first tested setting to cross a 95% ANN Recall@10 target. It retained **95.15%** of Flat's exact top-10 neighbors while reducing mean search latency from **29.614 ms to 4.479 ms**, about **6.6x faster**. Higher `nprobe` values improved recall further but with diminishing returns in latency.
+
+Run the benchmark with [`scripts/benchmark_faiss.py`](scripts/benchmark_faiss.py). Results are machine-dependent, so the table records the measured experiment rather than a general FAISS performance claim.
+
 ## Leakage controls
 
 - Train, validation and test boundaries are defined by **query ID**, not rows.
@@ -54,6 +71,7 @@ I use the name **known-E recall** because ESCI does not label every randomly sam
 | `src/search.py` | Persisted FAISS index loading and search |
 | `src/api.py` | FastAPI inference service |
 | `scripts/build_index.py` | Product embedding and FAISS index builder |
+| `scripts/benchmark_faiss.py` | Flat/IVF ANN recall and latency benchmark |
 | `tests/test_pipeline.py` | Offline synthetic tests |
 | `notebooks/amazon_ranking.ipynb` | Compact baseline walkthrough |
 
@@ -82,8 +100,7 @@ Model downloads require internet access or a local Hugging Face cache. GPU train
 
 ## API
 
-Build a small exact-search index first. Use `--model` with a local Experiment B
-checkpoint when it is available.
+Build a small exact-search index first. Use `--model` with a local Experiment B checkpoint when it is available.
 
 ```bash
 python scripts/build_index.py \
@@ -93,16 +110,15 @@ python scripts/build_index.py \
   --output-dir artifacts
 ```
 
-For a larger catalog, IVF avoids comparing the query with every product. `nprobe`
-controls the speed-recall trade-off by setting how many clusters are searched.
+For a larger catalog, IVF avoids comparing the query with every product. `nprobe` controls the speed-recall trade-off by setting how many clusters are searched.
 
 ```bash
 python scripts/build_index.py \
   --catalog data/raw/shopping_queries_dataset_products.parquet \
-  --limit 50000 \
+  --limit 500000 \
   --index-type ivf \
-  --nlist 224 \
-  --nprobe 16 \
+  --nlist 707 \
+  --nprobe 104 \
   --output-dir artifacts
 ```
 
@@ -116,8 +132,7 @@ curl -X POST http://localhost:8000/rank \
   -d '{"query":"quiet cooling fan","products":["USB cabinet fan","Tower fan with remote","Automotive cooling fan assembly"],"top_k":3}'
 ```
 
-`/rank` orders a supplied product list. `/search` retrieves products from the
-persisted index:
+`/rank` orders a supplied product list. `/search` retrieves products from the persisted index:
 
 ```bash
 curl -X POST http://localhost:8000/search \
@@ -125,9 +140,7 @@ curl -X POST http://localhost:8000/search \
   -d '{"query":"quiet cooling fan","top_k":10}'
 ```
 
-Set `MODEL_PATH` to use a local fine-tuned checkpoint and `ARTIFACT_DIR` when the
-index is stored elsewhere. The same model must be used to build and query an index.
-`/health` reports whether the rank model and search index have been loaded.
+Set `MODEL_PATH` to use a local fine-tuned checkpoint and `ARTIFACT_DIR` when the index is stored elsewhere. The same model must be used to build and query an index. `/health` reports whether the rank model and search index have been loaded.
 
 ## Docker
 
@@ -151,14 +164,15 @@ For a fixed deployment, set `MODEL_PATH` to a saved local checkpoint instead of 
 7. Align queries and run a paired bootstrap.
 8. Build controlled pools retaining every judged product.
 9. Repeat with multiple distractor seeds.
+10. Benchmark Flat and IVF on sampled real queries, keeping embedding time outside the FAISS latency measurement.
 
-The values in the JSON report were copied from saved notebook outputs. They were not rerun during this refactor because the raw data and checkpoints are not committed.
+The values in the JSON report were copied from saved notebook outputs. They were not rerun during this refactor because the raw data and checkpoints are not committed. FAISS benchmark values were measured separately on the experiment machine and are hardware-dependent.
 
 ## Limitations
 
 - Title-only representation; descriptions and structured attributes were excluded.
 - One sampled Exact/Irrelevant pair per eligible query; no hard-negative mining.
 - One epoch and two learning rates are not exhaustive tuning.
-- The 10K pool is a controlled stress test, not full-catalog evaluation.
-- Flat and IVF serving paths still need latency and recall measurements on the target machine.
+- The 10K pool is a controlled stress test, not full-catalog relevance evaluation.
+- The FAISS serving benchmark currently scales to 500K indexed products; full-catalog ANN benchmarking remains future work.
 - Offline NDCG does not directly measure clicks or conversion.
