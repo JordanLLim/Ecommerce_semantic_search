@@ -267,3 +267,4 @@ High ANN recall does not prove high product relevance. Likewise, offline NDCG do
 - JSONL query logging is suitable for a portfolio deployment, not a high-volume production logging pipeline.
 - The 1.3M ANN figures are hardware-dependent benchmark measurements, not universal FAISS performance claims.
 - A live cloud deployment still requires generated artifacts and deployment credentials; neither is committed to the repository.
+- The expanded serving path in this branch has not yet been validated end-to-end against the user's generated 1.3M artifacts. CI covers syntax and unit tests; real integration validation must use those local artifacts before merge/resume claims.
