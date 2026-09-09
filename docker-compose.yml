@@ -1,0 +1,25 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      ARTIFACT_DIR: /app/artifacts
+      QUERY_LOG_PATH: /app/logs/search.jsonl
+      SEARCH_CACHE_SIZE: 256
+    volumes:
+      - ./artifacts:/app/artifacts:ro
+      - ./logs:/app/logs
+    ports:
+      - "8000:8000"
+
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    environment:
+      API_URL: http://api:8000
+    depends_on:
+      - api
+    ports:
+      - "8501:8501"
