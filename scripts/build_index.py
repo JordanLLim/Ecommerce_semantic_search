@@ -4,21 +4,41 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+REQUIRED_COLUMNS = ["product_id", "product_title"]
+OPTIONAL_COLUMNS = [
+    "product_brand",
+    "product_color",
+    "product_locale",
+    "product_description",
+    "product_bullet_point",
+]
+
 
 def read_catalog(path):
     path = Path(path)
     if path.suffix.lower() == ".parquet":
-        frame = pd.read_parquet(path, columns=["product_id", "product_title"])
+        available = set(pd.read_parquet(path).columns)
+        columns = REQUIRED_COLUMNS + [name for name in OPTIONAL_COLUMNS if name in available]
+        frame = pd.read_parquet(path, columns=columns)
     elif path.suffix.lower() == ".csv":
-        frame = pd.read_csv(path, usecols=["product_id", "product_title"])
+        header = pd.read_csv(path, nrows=0)
+        available = set(header.columns)
+        columns = REQUIRED_COLUMNS + [name for name in OPTIONAL_COLUMNS if name in available]
+        frame = pd.read_csv(path, usecols=columns)
     else:
         raise ValueError("Catalog must be a .csv or .parquet file.")
-    frame = frame.dropna(subset=["product_id", "product_title"])
+
+    missing = [name for name in REQUIRED_COLUMNS if name not in frame.columns]
+    if missing:
+        raise ValueError(f"Catalog is missing required columns: {missing}")
+
+    frame = frame.dropna(subset=REQUIRED_COLUMNS)
     frame = frame.drop_duplicates("product_id", keep="first").reset_index(drop=True)
     frame["product_id"] = frame["product_id"].astype(str)
     frame["product_title"] = frame["product_title"].astype(str)
@@ -83,6 +103,7 @@ def main():
         if args.limit < 1:
             raise ValueError("limit must be positive.")
         products = products.head(args.limit).copy()
+
     model = SentenceTransformer(args.model)
     embeddings = model.encode(
         products["product_title"].tolist(),
@@ -92,12 +113,15 @@ def main():
     )
     index = build_faiss_index(embeddings, args.index_type, args.nlist, args.nprobe)
     settings = {
+        "artifact_version": 2,
+        "built_at_utc": datetime.now(timezone.utc).isoformat(),
         "model": args.model,
         "index_type": args.index_type,
         "products": len(products),
         "dimension": int(np.asarray(embeddings).shape[1]),
         "nlist": args.nlist if args.index_type == "ivf" else None,
         "nprobe": min(args.nprobe, args.nlist) if args.index_type == "ivf" else None,
+        "metadata_columns": list(products.columns),
     }
     write_artifacts(products, index, args.output_dir, settings)
     print(f"Indexed {len(products):,} products in {args.output_dir}")
