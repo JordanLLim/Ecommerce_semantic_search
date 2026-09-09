@@ -1,10 +1,38 @@
 # Amazon Semantic Search and Product Ranking
 
-Experiments with lexical and semantic product ranking on the Amazon Shopping Queries ESCI dataset. The project compares TF-IDF with MiniLM, fine-tunes the encoder with triplet loss, and tests both candidate ranking and retrieval from a larger product pool.
+End-to-end semantic product search on the Amazon Shopping Queries ESCI dataset. The project covers offline relevance experiments, large-catalog ANN retrieval, a FastAPI serving layer, optional reranking and lexical fusion, a Streamlit client, observability utilities, Docker deployment and reproducible benchmarks.
 
-> Independent portfolio project; not affiliated with Amazon. Raw data, credentials and model weights are not committed.
+> Independent portfolio project; not affiliated with Amazon. Raw data, credentials, generated indexes and model weights are not committed.
 
-## Results
+## System architecture
+
+```text
+Amazon product catalog
+        |
+        v
+Sentence Transformer embeddings
+        |
+        v
+FAISS index artifacts --------------------------+
+                                                |
+Streamlit UI -- HTTP --> FastAPI /search -------+
+                                                |
+                                  query embedding
+                                                |
+                                           FAISS IVF
+                                                |
+                                  metadata filtering
+                                                |
+                          optional lexical fusion / preferences
+                                                |
+                              optional cross-encoder reranker
+                                                |
+                                           top-k JSON
+```
+
+The UI and retrieval service are intentionally separated. Streamlit is a client; model/index loading and search logic remain behind the FastAPI API.
+
+## Offline relevance results
 
 ### Candidate ranking
 
@@ -30,32 +58,62 @@ Candidate ranking is not catalog retrieval. A separate test sampled 200 validati
 | Fine-tuned A | 0.5056 | 0.7968 | 0.880 |
 | Fine-tuned B | **0.5183** | **0.8194** | **0.890** |
 
-I use the name **known-E recall** because ESCI does not label every randomly sampled catalog product. With pool seeds 17, 43 and 97, Experiment B averaged 0.5242 Recall@10 and 0.8223 Recall@50. Full values are in [`reports/experiment_results.json`](reports/experiment_results.json).
+I use the name **known-E recall** because ESCI does not label every randomly sampled catalog product. With pool seeds 17, 43 and 97, Experiment B averaged 0.5242 Recall@10 and 0.8223 Recall@50. Full saved values are in [`reports/experiment_results.json`](reports/experiment_results.json).
 
-### FAISS scalability benchmark
+## ANN scalability benchmark
 
-The serving benchmark compares IVF approximate search with exact `IndexFlatIP` search using normalized MiniLM embeddings. It uses 200 sampled Amazon queries and reports ANN Recall@10 as overlap with Flat's exact top-10 neighbors. This is an index approximation metric, not ESCI relevance or model accuracy. Embedding time is excluded so the latency numbers isolate FAISS search behavior.
+FAISS IVF is compared with exact `IndexFlatIP` using the same normalized MiniLM embeddings. ANN Recall@10 is the overlap between IVF and Flat top-10 neighbours. It measures index approximation quality, **not product relevance or model accuracy**.
 
-| Catalog | Index | nlist | nprobe | ANN Recall@10 vs Flat | Mean latency/query | Speedup vs Flat |
-| ---: | --- | ---: | ---: | ---: | ---: | ---: |
-| 50K | Flat | - | - | 1.0000 | 2.140 ms | 1.0x |
-| 50K | IVF | 224 | 64 | 0.9550 | 0.645 ms | 3.3x |
-| 500K | Flat | - | - | 1.0000 | 29.614 ms | 1.0x |
-| 500K | IVF | 707 | 96 | 0.9475 | 4.161 ms | 7.1x |
-| **500K** | **IVF** | **707** | **104** | **0.9515** | **4.479 ms** | **6.6x** |
-| 500K | IVF | 707 | 128 | 0.9570 | 5.536 ms | 5.3x |
+The current benchmark function searches a batch of queries in one FAISS call and divides total search time by the number of queries. The timing below is therefore **batch-normalized FAISS search time/query**, not production HTTP latency and not true single-request p95 latency.
 
-For the 500K benchmark, `nprobe=104` was the first tested setting to cross a 95% ANN Recall@10 target. It retained **95.15%** of Flat's exact top-10 neighbors while reducing mean search latency from **29.614 ms to 4.479 ms**, about **6.6x faster**. Higher `nprobe` values improved recall further but with diminishing returns in latency.
+### 1.3M-product benchmark, 1,000 real Amazon queries
 
-Run the benchmark with [`scripts/benchmark_faiss.py`](scripts/benchmark_faiss.py). Results are machine-dependent, so the table records the measured experiment rather than a general FAISS performance claim.
+| Index | nlist | nprobe | ANN Recall@10 vs Flat | Batch-normalized search time/query |
+| --- | ---: | ---: | ---: | ---: |
+| Flat | - | - | 1.0000 | 5.129 ms |
+| IVF | 4096 | 16 | 0.8618 | 0.411 ms |
+| IVF | 4096 | 32 | 0.9044 | 0.711 ms |
+| IVF | 4096 | 64 | 0.9379 | 1.375 ms |
+| **IVF** | **4096** | **128** | **0.9592** | **2.615 ms** |
+| IVF | 4096 | 256 | 0.9753 | 5.097 ms |
 
-## Leakage controls
+`nprobe=128` is the selected operating point among these runs: it retained **95.92%** of Flat's top-10 neighbours while using roughly **half the batch-normalized FAISS search time**. `nprobe=256` improved recall to 97.53% but removed almost all of the timing advantage.
 
-- Train, validation and test boundaries are defined by **query ID**, not rows.
-- TF-IDF vocabulary is fit only on fit-split product titles.
-- Validation queries are excluded before triplet construction.
-- Models use identical evaluation pairs and deterministic tie handling.
-- The initially inspected test sample is documented as exposed and is not used for model selection.
+An earlier `nlist=1100` run made IVF slower than Flat at high `nprobe`; increasing the number of inverted lists to 4096 produced a much better speed-recall trade-off. This is kept as an engineering finding rather than assuming IVF is automatically faster for every index configuration.
+
+Run [`scripts/benchmark_faiss.py`](scripts/benchmark_faiss.py) for Flat/IVF approximation tests. Run [`scripts/benchmark_serving_latency.py`](scripts/benchmark_serving_latency.py) for one-query-at-a-time backend latency including query embedding. [`scripts/benchmark_hnsw.py`](scripts/benchmark_hnsw.py) is provided to compare HNSW before making a production index choice.
+
+## Search pipeline
+
+The online pipeline supports:
+
+- FAISS Flat or IVF indexes persisted to disk.
+- Configurable `nlist`/`nprobe` stored with index metadata.
+- Optional brand and locale filtering when those fields exist in the product catalog.
+- Dense + lexical candidate fusion. This is post-ANN lexical fusion, **not a separate BM25 candidate generator**.
+- Optional cross-encoder reranking of retrieved candidates.
+- Small preference-keyword boosts to demonstrate a personalization hook.
+- Deterministic dense/enhanced A/B assignment from a stable experiment key.
+- In-process LRU caching for repeated identical requests.
+- JSONL query telemetry and lightweight `/metrics` counters.
+- Model/index artifact version metadata.
+- Configurable embedding and reranker model paths. A multilingual embedding model can be substituted, but multilingual relevance should be evaluated before making quality claims.
+
+## Index lifecycle
+
+Offline index build:
+
+```text
+catalog -> clean/deduplicate -> encode product titles -> train/build FAISS -> save index + aligned metadata + settings
+```
+
+Online serving:
+
+```text
+service startup -> load model/index once -> encode each query -> retrieve -> optional post-processing -> return JSON
+```
+
+Catalog/model changes require a compatible rebuild or a deliberately designed incremental update path. The serving code does not rebuild the index per request.
 
 ## Layout
 
@@ -68,12 +126,16 @@ Run the benchmark with [`scripts/benchmark_faiss.py`](scripts/benchmark_faiss.py
 | `src/lexical.py` | TF-IDF baseline |
 | `src/evaluation.py` | NDCG, P@K, Recall, MRR and paired bootstrap |
 | `src/retrieval.py` | Controlled pools and known-E metrics |
-| `src/search.py` | Persisted FAISS index loading and search |
+| `src/search.py` | Persisted FAISS search, filtering and lexical fusion |
+| `src/reranking.py` | Optional cross-encoder reranker |
+| `src/serving.py` | Cache, telemetry, metrics and A/B utilities |
 | `src/api.py` | FastAPI inference service |
-| `scripts/build_index.py` | Product embedding and FAISS index builder |
-| `scripts/benchmark_faiss.py` | Flat/IVF ANN recall and latency benchmark |
-| `tests/test_pipeline.py` | Offline synthetic tests |
-| `notebooks/amazon_ranking.ipynb` | Compact baseline walkthrough |
+| `app.py` | Streamlit HTTP client |
+| `scripts/build_index.py` | Product embedding and FAISS artifact builder |
+| `scripts/benchmark_faiss.py` | Flat/IVF ANN recall and batched timing benchmark |
+| `scripts/benchmark_serving_latency.py` | Single-query backend latency benchmark |
+| `scripts/benchmark_hnsw.py` | Flat/HNSW comparison experiment |
+| `tests/` | Offline and serving utility tests |
 
 ## Data
 
@@ -82,7 +144,7 @@ Place the Amazon Shopping Queries files below in `data/raw/`, or set `AMAZON_DAT
 - `shopping_queries_dataset_examples.parquet`
 - `shopping_queries_dataset_products.parquet`
 
-The full US merge contained 1,818,825 rows, 97,345 queries and 1,215,851 products. The main experiment used the provided small-version split.
+The earlier US experiment merge contained 1,818,825 query-product rows, 97,345 queries and 1,215,851 products. The ANN benchmark above used a separately loaded 1.3M-product catalog benchmark set, so those counts should not be treated as the same filtered dataset.
 
 ## Setup and tests
 
@@ -93,14 +155,13 @@ python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 python -m unittest discover -s tests -v
-jupyter lab
 ```
 
-Model downloads require internet access or a local Hugging Face cache. GPU training is practical on Kaggle or Colab; utilities and synthetic tests run offline.
+CI compiles Python sources and runs the unit test suite on pushes and pull requests.
 
-## API
+## Build an index
 
-Build a small exact-search index first. Use `--model` with a local Experiment B checkpoint when it is available.
+Small exact index:
 
 ```bash
 python scripts/build_index.py \
@@ -110,69 +171,100 @@ python scripts/build_index.py \
   --output-dir artifacts
 ```
 
-For a larger catalog, IVF avoids comparing the query with every product. `nprobe` controls the speed-recall trade-off by setting how many clusters are searched.
+Large IVF example using the selected benchmark configuration:
 
 ```bash
 python scripts/build_index.py \
   --catalog data/raw/shopping_queries_dataset_products.parquet \
-  --limit 500000 \
+  --limit 1300000 \
   --index-type ivf \
-  --nlist 707 \
-  --nprobe 104 \
+  --nlist 4096 \
+  --nprobe 128 \
   --output-dir artifacts
 ```
+
+The same embedding model must be used to build and query an index.
+
+## Run locally
+
+Backend:
 
 ```bash
 uvicorn src.api:app --host 0.0.0.0 --port 8000
 ```
 
+UI:
+
 ```bash
-curl -X POST http://localhost:8000/rank \
-  -H "Content-Type: application/json" \
-  -d '{"query":"quiet cooling fan","products":["USB cabinet fan","Tower fan with remote","Automotive cooling fan assembly"],"top_k":3}'
+API_URL=http://localhost:8000 streamlit run app.py
 ```
 
-`/rank` orders a supplied product list. `/search` retrieves products from the persisted index:
+Open the Streamlit URL and compare dense retrieval, lexical fusion and cross-encoder reranking interactively.
+
+### Search API
 
 ```bash
 curl -X POST http://localhost:8000/search \
   -H "Content-Type: application/json" \
-  -d '{"query":"quiet cooling fan","top_k":10}'
+  -d '{
+    "query":"quiet cooling fan",
+    "top_k":10,
+    "candidate_k":50,
+    "hybrid":true,
+    "rerank":true
+  }'
 ```
 
-Set `MODEL_PATH` to use a local fine-tuned checkpoint and `ARTIFACT_DIR` when the index is stored elsewhere. The same model must be used to build and query an index. `/health` reports whether the rank model and search index have been loaded.
+Useful endpoints:
 
-## Docker
+- `GET /health`: service and loaded-artifact information.
+- `GET /metrics`: request/error/cache/variant counters.
+- `POST /rank`: rank a supplied product list.
+- `POST /search`: retrieve from the persisted catalog index.
+
+Environment variables include `MODEL_PATH`, `RERANKER_MODEL`, `ARTIFACT_DIR`, `QUERY_LOG_PATH`, `SEARCH_CACHE_SIZE` and `API_URL` for the UI.
+
+## Docker Compose
+
+Put the generated index files under `artifacts/`, then run:
 
 ```bash
-docker build -t amazon-semantic-ranker .
-docker run --rm -p 8000:8000 \
-  -v "$(pwd)/artifacts:/app/artifacts:ro" \
-  amazon-semantic-ranker
+docker compose up --build
 ```
 
-For a fixed deployment, set `MODEL_PATH` to a saved local checkpoint instead of downloading a model at startup.
+The API is exposed on `localhost:8000` and Streamlit on `localhost:8501`. The UI container calls the API container through the Compose network. Generated indexes remain outside the image and are mounted read-only into the API container.
+
+## Evaluation boundaries
+
+Two different layers are intentionally reported separately:
+
+1. **Semantic relevance** — NDCG, precision, MRR and known-E retrieval metrics using ESCI judgments.
+2. **ANN approximation** — overlap of approximate IVF/HNSW neighbours with exact Flat neighbours.
+
+High ANN recall does not prove high product relevance. Likewise, offline NDCG does not directly measure clicks, conversion or business value.
 
 ## Reproducing experiments
 
-1. Load the US merge and create the provided small split.
-2. Split training rows by query ID with `split_train_validation`.
-3. Fit TF-IDF only on unique fit-split titles.
-4. Build triplets only from the fit split.
-5. Train independent A/B models from the same initialization.
-6. Score the fixed validation pairs and compute candidate metrics.
-7. Align queries and run a paired bootstrap.
-8. Build controlled pools retaining every judged product.
-9. Repeat with multiple distractor seeds.
-10. Benchmark Flat and IVF on sampled real queries, keeping embedding time outside the FAISS latency measurement.
+1. Load and validate the Amazon data.
+2. Split training/validation by query ID, never by individual rows.
+3. Fit lexical baselines on the fit split only.
+4. Construct triplets without validation leakage.
+5. Train independent encoder experiments from the same initialization.
+6. Evaluate identical held-out candidate sets and run paired bootstrap analysis.
+7. Build controlled retrieval pools retaining judged products.
+8. Build persisted Flat/IVF artifacts for serving.
+9. Benchmark ANN recall against Flat with real Amazon queries.
+10. Measure single-query serving latency separately from batch FAISS throughput.
+11. Run API/UI integration with the generated artifacts.
 
-The values in the JSON report were copied from saved notebook outputs. They were not rerun during this refactor because the raw data and checkpoints are not committed. FAISS benchmark values were measured separately on the experiment machine and are hardware-dependent.
+## Current limitations
 
-## Limitations
-
-- Title-only representation; descriptions and structured attributes were excluded.
-- One sampled Exact/Irrelevant pair per eligible query; no hard-negative mining.
-- One epoch and two learning rates are not exhaustive tuning.
-- The 10K pool is a controlled stress test, not full-catalog relevance evaluation.
-- The FAISS serving benchmark currently scales to 500K indexed products; full-catalog ANN benchmarking remains future work.
-- Offline NDCG does not directly measure clicks or conversion.
+- Title-only dense representation remains the main retrieval signal; descriptions and attributes are stored when present but are not yet embedded jointly.
+- The lexical fusion step reranks ANN candidates; it is not a fully independent BM25 retrieval branch.
+- Cross-encoder reranking increases quality capacity but also adds serving latency and still requires relevance evaluation on the target candidate set.
+- Preference keywords are a demonstration hook, not learned personalization.
+- The cache and metrics are process-local; a distributed deployment would use shared infrastructure such as Redis and a dedicated metrics stack.
+- JSONL query logging is suitable for a portfolio deployment, not a high-volume production logging pipeline.
+- The 1.3M ANN figures are hardware-dependent benchmark measurements, not universal FAISS performance claims.
+- A live cloud deployment still requires generated artifacts and deployment credentials; neither is committed to the repository.
+- The expanded serving path in this branch has not yet been validated end-to-end against the user's generated 1.3M artifacts. CI covers syntax and unit tests; real integration validation must use those local artifacts before merge/resume claims.
