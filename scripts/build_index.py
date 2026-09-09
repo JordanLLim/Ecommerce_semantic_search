@@ -23,7 +23,9 @@ OPTIONAL_COLUMNS = [
 def read_catalog(path):
     path = Path(path)
     if path.suffix.lower() == ".parquet":
-        available = set(pd.read_parquet(path).columns)
+        import pyarrow.parquet as pq
+
+        available = set(pq.ParquetFile(path).schema.names)
         columns = REQUIRED_COLUMNS + [name for name in OPTIONAL_COLUMNS if name in available]
         frame = pd.read_parquet(path, columns=columns)
     elif path.suffix.lower() == ".csv":
