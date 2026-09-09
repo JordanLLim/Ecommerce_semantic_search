@@ -82,6 +82,99 @@ The current benchmark function searches a batch of queries in one FAISS call and
 An earlier `nlist=1100` run made IVF slower than Flat at high `nprobe`; increasing the number of inverted lists to 4096 produced a much better speed-recall trade-off. This is kept as an engineering finding rather than assuming IVF is automatically faster for every index configuration.
 
 Run [`scripts/benchmark_faiss.py`](scripts/benchmark_faiss.py) for Flat/IVF approximation tests. Run [`scripts/benchmark_serving_latency.py`](scripts/benchmark_serving_latency.py) for one-query-at-a-time backend latency including query embedding. [`scripts/benchmark_hnsw.py`](scripts/benchmark_hnsw.py) is provided to compare HNSW before making a production index choice.
+## Design decisions
+
+The project was developed in stages rather than treating semantic search as a single modelling problem. Each stage answers a different question: whether semantic representations improve ranking, whether task-specific fine-tuning improves those representations, and whether the approach can support retrieval from a much larger product catalog.
+
+### TF-IDF vs MiniLM
+
+TF-IDF provides a simple lexical baseline and works well when query and product titles share the same terms. It is useful because it shows how much of the task can be solved by exact or near-exact word overlap.
+
+Frozen MiniLM is used as the first semantic baseline. This separates gains from pretrained semantic representations from gains introduced later by task-specific fine-tuning.
+
+### Why triplet loss?
+
+The goal is not to predict an ESCI class directly, but to improve the embedding space used for ranking and retrieval. Triplet training encourages an Exact product to move closer to its query while pushing an Irrelevant product farther away.
+
+The first version uses a simple Exact/Irrelevant sampling strategy to keep the experiment interpretable and reproducible. Hard-negative mining is a possible extension, but is kept separate so its effect can be measured rather than mixed into the baseline experiment.
+
+### Candidate ranking vs catalog retrieval
+
+Ranking a supplied candidate set and searching a catalog are different problems.
+
+Candidate ranking asks: **given a known set of products, can the model order them correctly?**
+
+Catalog retrieval asks: **can the system find relevant products when they are mixed with many unrelated products?**
+
+For this reason, NDCG, Precision, Recall and MRR are first measured on the fixed ESCI query-product pairs. A separate retrieval experiment then adds thousands of catalog distractors while retaining every judged product.
+
+### Why repeat retrieval with multiple seeds?
+
+A retrieval result based on one random distractor pool can depend on which products happened to be sampled. Repeating the experiment with multiple seeds provides a simple robustness check and shows whether model comparisons remain stable when the candidate pool changes.
+
+### Why paired bootstrap confidence intervals?
+
+A small improvement in average NDCG does not necessarily mean one model is consistently better. Paired bootstrap resampling is therefore performed at the query level, with every model evaluated on the same queries.
+
+This is especially useful here because fine-tuning improves some queries while degrading others.
+
+### Why keep both fine-tuned experiments?
+
+Experiment A achieves the strongest candidate-ranking NDCG@10, while Experiment B performs better on the controlled known-E retrieval test.
+
+Both are retained because the model that ranks a small candidate set best is not necessarily the model that retrieves best from a larger pool. Keeping both results makes that trade-off visible instead of selecting a winner from a single metric.
+
+### Exact search and approximate search
+
+The current controlled retrieval experiment is small enough for exhaustive similarity search. The next systems step is to add FAISS and compare exact and approximate nearest-neighbour indexes.
+
+**IndexFlatIP** performs exhaustive search over all indexed embeddings. It is slower as the catalog grows, but provides an exact reference for the embedding model.
+
+**IndexIVFFlat** first partitions the embedding space into clusters and searches only selected clusters. It reduces the amount of the catalog examined for each query, but introduces a recall-latency trade-off controlled partly by `nprobe`.
+
+Flat search is therefore not made obsolete by IVF. It acts as the exact reference used to measure how much retrieval quality is lost when approximate search is introduced.
+
+The intended comparison is:
+
+```text
+IndexFlatIP   -> exact-search reference
+IndexIVFFlat  -> approximate candidate retrieval
+```
+
+The useful production question is not simply whether IVF is faster, but how much recall is retained for the latency improvement.
+
+### Why not immediately treat the full 1.2M-product catalog as evaluation ground truth?
+
+The full US catalog contains more than 1.2 million unique products, but ESCI relevance judgments are incomplete outside the supplied query-product pairs. A randomly retrieved product with no ESCI label is not necessarily irrelevant.
+
+The current controlled pools therefore retain all known judged products and use additional catalog products as distractors. Full-catalog ANN search can still be useful for scalability and latency experiments, but incomplete labels should not be treated as reliable negative relevance judgments.
+
+### Current engineering direction
+
+The planned retrieval path is:
+
+```text
+User query
+    |
+    v
+MiniLM query encoder
+    |
+    v
+FAISS candidate retrieval
+    |
+    v
+Top-K product candidates
+    |
+    v
+Semantic ranking
+    |
+    v
+Ranked results
+```
+
+The next benchmark should measure retrieval recall and query latency together across different FAISS configurations. The objective is to find an operating point where approximate retrieval reduces search cost while preserving most of the exact-search result quality.
+
+## Leakage controls
 
 ## Search pipeline
 
