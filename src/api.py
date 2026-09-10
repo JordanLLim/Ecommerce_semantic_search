@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from time import perf_counter
 
@@ -19,6 +20,7 @@ DEFAULT_ARTIFACT_DIR = "artifacts"
 DEFAULT_RERANKER = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 QUERY_LOG_PATH = os.getenv("QUERY_LOG_PATH", "logs/search.jsonl")
 RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "20"))
+PRELOAD_INDEX = os.getenv("PRELOAD_INDEX", "0").lower() in {"1", "true", "yes"}
 
 SEARCH_CACHE = LRUCache(max_size=int(os.getenv("SEARCH_CACHE_SIZE", "256")))
 METRICS = SearchMetrics()
@@ -63,7 +65,14 @@ def get_reranker():
     return CrossEncoderReranker(os.getenv("RERANKER_MODEL", DEFAULT_RERANKER))
 
 
-app = FastAPI(title="Amazon Semantic Ranker", version="2.0.0")
+@asynccontextmanager
+async def lifespan(_app):
+    if PRELOAD_INDEX:
+        get_search_engine()
+    yield
+
+
+app = FastAPI(title="Findly Semantic Search", version="2.1.0", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -71,7 +80,7 @@ def health():
     engine_loaded = get_search_engine.cache_info().currsize > 0
     settings = get_search_engine().settings if engine_loaded else {}
     return {
-        "status": "ok",
+        "status": "ready" if engine_loaded else "ok",
         "version": app.version,
         "rank_model_loaded": get_model.cache_info().currsize > 0,
         "search_index_loaded": engine_loaded,
@@ -113,13 +122,12 @@ def search(request: SearchRequest):
 
     started = perf_counter()
     try:
-        # Retrieve a broad ANN pool, then send only the strongest small subset to
-        # the expensive cross-encoder. This keeps two-stage ranking practical on CPU.
         retrieval_limit = max(request.candidate_k, request.top_k)
-        rerank_limit = min(
-            retrieval_limit,
-            max(request.top_k, RERANK_CANDIDATES),
-        ) if use_reranker else request.top_k
+        rerank_limit = (
+            min(retrieval_limit, max(request.top_k, RERANK_CANDIDATES))
+            if use_reranker
+            else request.top_k
+        )
 
         results, retrieval_latency_ms = get_search_engine().search(
             request.query,
