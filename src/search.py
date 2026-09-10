@@ -85,22 +85,25 @@ class ProductSearch:
 
         Hybrid mode is deliberately lightweight: lexical overlap is fused with the
         dense score inside the ANN candidate set. It is not an independent BM25
-        candidate generator, so the API and README describe it as lexical fusion.
+        candidate generator.
         """
         query = query.strip()
         if not query:
             raise ValueError("query must not be blank.")
-        if top_k < 1 or candidate_k < top_k:
-            raise ValueError("candidate_k must be greater than or equal to top_k.")
+        if top_k < 1:
+            raise ValueError("top_k must be at least 1.")
         if not 0.0 <= hybrid_alpha <= 1.0:
             raise ValueError("hybrid_alpha must be between 0 and 1.")
+
+        # Keep the lower-level search API backwards compatible and safe. If callers
+        # request a top_k larger than candidate_k, automatically widen the ANN pool.
+        effective_candidate_k = max(int(candidate_k or top_k), int(top_k))
 
         started = perf_counter()
         vector = self.model.encode(query, normalize_embeddings=True)
         vector = np.asarray(vector, dtype="float32").reshape(1, -1)
 
-        # Pull extra ANN candidates so post-retrieval filters and reranking have room.
-        search_limit = min(max(candidate_k, top_k), self.index.ntotal)
+        search_limit = min(effective_candidate_k, self.index.ntotal)
         scores, indices = self.index.search(vector, search_limit)
 
         keyword_tokens = _tokens(" ".join(user_keywords or []))
@@ -138,7 +141,7 @@ class ProductSearch:
         if hybrid or keyword_tokens:
             candidates.sort(key=lambda item: item["combined_score"], reverse=True)
 
-        results = candidates[:top_k]
+        results = candidates[: min(top_k, len(candidates))]
         for rank, item in enumerate(results, start=1):
             item["rank"] = rank
 
