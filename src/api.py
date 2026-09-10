@@ -18,6 +18,7 @@ DEFAULT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 DEFAULT_ARTIFACT_DIR = "artifacts"
 DEFAULT_RERANKER = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 QUERY_LOG_PATH = os.getenv("QUERY_LOG_PATH", "logs/search.jsonl")
+RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "20"))
 
 SEARCH_CACHE = LRUCache(max_size=int(os.getenv("SEARCH_CACHE_SIZE", "256")))
 METRICS = SearchMetrics()
@@ -81,7 +82,6 @@ def health():
 
 @app.get("/metrics")
 def metrics():
-    """Lightweight JSON metrics for the portfolio deployment."""
     return METRICS.snapshot(cache_size=SEARCH_CACHE.size)
 
 
@@ -113,11 +113,18 @@ def search(request: SearchRequest):
 
     started = perf_counter()
     try:
-        candidate_limit = max(request.candidate_k, request.top_k * 5 if use_reranker else request.top_k)
+        # Retrieve a broad ANN pool, then send only the strongest small subset to
+        # the expensive cross-encoder. This keeps two-stage ranking practical on CPU.
+        retrieval_limit = max(request.candidate_k, request.top_k)
+        rerank_limit = min(
+            retrieval_limit,
+            max(request.top_k, RERANK_CANDIDATES),
+        ) if use_reranker else request.top_k
+
         results, retrieval_latency_ms = get_search_engine().search(
             request.query,
-            top_k=candidate_limit if use_reranker else request.top_k,
-            candidate_k=candidate_limit,
+            top_k=retrieval_limit if use_reranker else request.top_k,
+            candidate_k=retrieval_limit,
             brand=request.brand,
             locale=request.locale,
             hybrid=use_hybrid,
@@ -128,7 +135,7 @@ def search(request: SearchRequest):
         rerank_latency_ms = 0.0
         if use_reranker and results:
             rerank_started = perf_counter()
-            results = get_reranker().rerank(request.query, results, request.top_k)
+            results = get_reranker().rerank(request.query, results[:rerank_limit], request.top_k)
             rerank_latency_ms = (perf_counter() - rerank_started) * 1000
         else:
             results = results[: request.top_k]
@@ -153,7 +160,8 @@ def search(request: SearchRequest):
                 "query": request.query,
                 "variant": variant,
                 "top_k": request.top_k,
-                "candidate_k": candidate_limit,
+                "candidate_k": retrieval_limit,
+                "rerank_candidates": rerank_limit if use_reranker else 0,
                 "hybrid": use_hybrid,
                 "reranked": use_reranker,
                 "brand": request.brand,
