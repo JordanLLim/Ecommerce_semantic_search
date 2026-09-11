@@ -75,7 +75,7 @@ async def lifespan(_app):
     yield
 
 
-app = FastAPI(title="Findly Semantic Search", version="2.2.0", lifespan=lifespan)
+app = FastAPI(title="Findly Semantic Search", version="2.2.1", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -129,7 +129,7 @@ def search(request: SearchRequest):
             results = results[: request.top_k]
 
         total_latency_ms = (perf_counter() - started) * 1000
-        payload = {"query": request.query, "variant": variant, "hybrid": use_hybrid, "reranked": use_reranker, "latency_ms": round(total_latency_ms, 3), "retrieval_latency_ms": round(retrieval_latency_ms, 3), "embedding_latency_ms": retrieval_timing.get("embedding_ms", 0.0), "faiss_latency_ms": retrieval_timing.get("faiss_ms", 0.0), "postprocess_latency_ms": retrieval_timing.get("postprocess_ms", 0.0), "rerank_latency_ms": round(rerank_latency_ms, 3), "cache_hit": False, "results": results}
+        payload = {"query": request.query, "variant": variant, "hybrid": use_hybrid, "reranked": use_reranker, "latency_ms": round(total_latency_ms, 3), "retrieval_latency_ms": round(retrieval_latency_ms, 3), "embedding_latency_ms": retrieval_timing.get("embedding_ms", 0.0), "faiss_latency_ms": retrieval_timing.get("faiss_ms", 0.0), "bm25_latency_ms": retrieval_timing.get("bm25_ms", 0.0), "postprocess_latency_ms": retrieval_timing.get("postprocess_ms", 0.0), "rerank_latency_ms": round(rerank_latency_ms, 3), "cache_hit": False, "results": results}
         SEARCH_CACHE.set(key, payload)
         METRICS.record(total_latency_ms, variant=variant, cache_hit=False)
         log_query(QUERY_LOG_PATH, {"query": request.query, "variant": variant, "top_k": request.top_k, "candidate_k": retrieval_limit, "rerank_candidates": rerank_limit if use_reranker else 0, "hybrid": use_hybrid, "reranked": use_reranker, "brand": request.brand, "locale": request.locale, "result_count": len(results), "latency_ms": round(total_latency_ms, 3), **retrieval_timing, "rerank_ms": round(rerank_latency_ms, 3)})

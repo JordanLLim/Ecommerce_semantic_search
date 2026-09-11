@@ -1,7 +1,7 @@
 """Benchmark dense, BM25+FAISS RRF, and optional reranking through the search API.
 
-Run the API with PRELOAD_INDEX=1 first. This script reports observed HTTP latency
-and does not claim relevance improvements; use the offline evaluation pipeline for that.
+Run the API with PRELOAD_INDEX=1 first. Each mode gets an unmeasured warm-up request so
+one-time model or sparse-index construction is not mixed into steady-state latency.
 """
 from __future__ import annotations
 import argparse, json, statistics, time
@@ -36,13 +36,16 @@ def main():
     args = parser.parse_args()
     modes = [("dense",False,False),("hybrid_rrf",True,False),("hybrid_rrf_rerank",True,True)]
     for name, hybrid, rerank in modes:
+        print(f"\nWarming {name}...", flush=True)
+        call(args.api, f"warmup {name}", hybrid, rerank, args.candidate_k)
         http, backend, embedding, faiss, bm25, rerank_ms = [], [], [], [], [], []
-        for i, q in enumerate(args.queries):
-            # suffix keeps repeated benchmark runs out of the exact-request cache
-            body, elapsed = call(args.api, q+f" benchmark{i}", hybrid, rerank, args.candidate_k)
+        for q in args.queries:
+            body, elapsed = call(args.api, q, hybrid, rerank, args.candidate_k)
             http.append(elapsed); backend.append(body["latency_ms"]); embedding.append(body.get("embedding_latency_ms",0)); faiss.append(body.get("faiss_latency_ms",0)); bm25.append(body.get("bm25_latency_ms",0)); rerank_ms.append(body.get("rerank_latency_ms",0))
-        print(f"\n{name} ({len(http)} queries)")
+        print(f"{name} ({len(http)} queries)")
         print(f"HTTP mean/p50/p95/p99: {statistics.mean(http):.1f}/{percentile(http,.5):.1f}/{percentile(http,.95):.1f}/{percentile(http,.99):.1f} ms")
         print(f"Backend mean: {statistics.mean(backend):.1f} ms | embedding {statistics.mean(embedding):.1f} | FAISS {statistics.mean(faiss):.1f} | BM25 {statistics.mean(bm25):.1f} | rerank {statistics.mean(rerank_ms):.1f}")
+        overhead = [h-b for h,b in zip(http,backend)]
+        print(f"HTTP outside backend mean: {statistics.mean(overhead):.1f} ms")
 
 if __name__ == "__main__": main()
