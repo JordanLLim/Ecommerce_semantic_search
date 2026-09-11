@@ -21,6 +21,7 @@ DEFAULT_RERANKER = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 QUERY_LOG_PATH = os.getenv("QUERY_LOG_PATH", "logs/search.jsonl")
 RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "20"))
 PRELOAD_INDEX = os.getenv("PRELOAD_INDEX", "0").lower() in {"1", "true", "yes"}
+WARMUP_QUERY = os.getenv("WARMUP_QUERY", "wireless keyboard")
 
 SEARCH_CACHE = LRUCache(max_size=int(os.getenv("SEARCH_CACHE_SIZE", "256")))
 METRICS = SearchMetrics()
@@ -48,16 +49,12 @@ class SearchRequest(BaseModel):
 @lru_cache(maxsize=1)
 def get_model():
     from sentence_transformers import SentenceTransformer
-
     return SentenceTransformer(os.getenv("MODEL_PATH", DEFAULT_MODEL))
 
 
 @lru_cache(maxsize=1)
 def get_search_engine():
-    return ProductSearch.load(
-        os.getenv("MODEL_PATH", DEFAULT_MODEL),
-        os.getenv("ARTIFACT_DIR", DEFAULT_ARTIFACT_DIR),
-    )
+    return ProductSearch.load(os.getenv("MODEL_PATH", DEFAULT_MODEL), os.getenv("ARTIFACT_DIR", DEFAULT_ARTIFACT_DIR))
 
 
 @lru_cache(maxsize=1)
@@ -65,28 +62,27 @@ def get_reranker():
     return CrossEncoderReranker(os.getenv("RERANKER_MODEL", DEFAULT_RERANKER))
 
 
+def warm_search_engine():
+    engine = get_search_engine()
+    engine.search(WARMUP_QUERY, top_k=1, candidate_k=10)
+    return engine.last_timing
+
+
 @asynccontextmanager
 async def lifespan(_app):
     if PRELOAD_INDEX:
-        get_search_engine()
+        warm_search_engine()
     yield
 
 
-app = FastAPI(title="Findly Semantic Search", version="2.1.0", lifespan=lifespan)
+app = FastAPI(title="Findly Semantic Search", version="2.2.0", lifespan=lifespan)
 
 
 @app.get("/health")
 def health():
     engine_loaded = get_search_engine.cache_info().currsize > 0
     settings = get_search_engine().settings if engine_loaded else {}
-    return {
-        "status": "ready" if engine_loaded else "ok",
-        "version": app.version,
-        "rank_model_loaded": get_model.cache_info().currsize > 0,
-        "search_index_loaded": engine_loaded,
-        "reranker_loaded": get_reranker.cache_info().currsize > 0,
-        "artifact": settings,
-    }
+    return {"status": "ready" if engine_loaded else "ok", "version": app.version, "rank_model_loaded": get_model.cache_info().currsize > 0, "search_index_loaded": engine_loaded, "reranker_loaded": get_reranker.cache_info().currsize > 0, "artifact": settings}
 
 
 @app.get("/metrics")
@@ -97,10 +93,7 @@ def metrics():
 @app.post("/rank")
 def rank(request: RankRequest):
     top_k = min(request.top_k, len(request.products))
-    return {
-        "query": request.query,
-        "results": rank_titles(request.query, request.products, get_model(), top_k=top_k),
-    }
+    return {"query": request.query, "results": rank_titles(request.query, request.products, get_model(), top_k=top_k)}
 
 
 @app.post("/search")
@@ -111,7 +104,6 @@ def search(request: SearchRequest):
     variant = assign_variant(request.experiment_key)
     use_hybrid = request.hybrid or variant == "enhanced"
     use_reranker = request.rerank or variant == "enhanced"
-
     key_payload = request.model_dump()
     key_payload["resolved_variant"] = variant
     key = cache_key(key_payload)
@@ -123,22 +115,10 @@ def search(request: SearchRequest):
     started = perf_counter()
     try:
         retrieval_limit = max(request.candidate_k, request.top_k)
-        rerank_limit = (
-            min(retrieval_limit, max(request.top_k, RERANK_CANDIDATES))
-            if use_reranker
-            else request.top_k
-        )
-
-        results, retrieval_latency_ms = get_search_engine().search(
-            request.query,
-            top_k=retrieval_limit if use_reranker else request.top_k,
-            candidate_k=retrieval_limit,
-            brand=request.brand,
-            locale=request.locale,
-            hybrid=use_hybrid,
-            hybrid_alpha=request.hybrid_alpha,
-            user_keywords=request.user_keywords,
-        )
+        rerank_limit = min(retrieval_limit, max(request.top_k, RERANK_CANDIDATES)) if use_reranker else request.top_k
+        engine = get_search_engine()
+        results, retrieval_latency_ms = engine.search(request.query, top_k=retrieval_limit if use_reranker else request.top_k, candidate_k=retrieval_limit, brand=request.brand, locale=request.locale, hybrid=use_hybrid, hybrid_alpha=request.hybrid_alpha, user_keywords=request.user_keywords)
+        retrieval_timing = dict(engine.last_timing)
 
         rerank_latency_ms = 0.0
         if use_reranker and results:
@@ -149,35 +129,10 @@ def search(request: SearchRequest):
             results = results[: request.top_k]
 
         total_latency_ms = (perf_counter() - started) * 1000
-        payload = {
-            "query": request.query,
-            "variant": variant,
-            "hybrid": use_hybrid,
-            "reranked": use_reranker,
-            "latency_ms": round(total_latency_ms, 3),
-            "retrieval_latency_ms": round(retrieval_latency_ms, 3),
-            "rerank_latency_ms": round(rerank_latency_ms, 3),
-            "cache_hit": False,
-            "results": results,
-        }
+        payload = {"query": request.query, "variant": variant, "hybrid": use_hybrid, "reranked": use_reranker, "latency_ms": round(total_latency_ms, 3), "retrieval_latency_ms": round(retrieval_latency_ms, 3), "embedding_latency_ms": retrieval_timing.get("embedding_ms", 0.0), "faiss_latency_ms": retrieval_timing.get("faiss_ms", 0.0), "postprocess_latency_ms": retrieval_timing.get("postprocess_ms", 0.0), "rerank_latency_ms": round(rerank_latency_ms, 3), "cache_hit": False, "results": results}
         SEARCH_CACHE.set(key, payload)
         METRICS.record(total_latency_ms, variant=variant, cache_hit=False)
-        log_query(
-            QUERY_LOG_PATH,
-            {
-                "query": request.query,
-                "variant": variant,
-                "top_k": request.top_k,
-                "candidate_k": retrieval_limit,
-                "rerank_candidates": rerank_limit if use_reranker else 0,
-                "hybrid": use_hybrid,
-                "reranked": use_reranker,
-                "brand": request.brand,
-                "locale": request.locale,
-                "result_count": len(results),
-                "latency_ms": round(total_latency_ms, 3),
-            },
-        )
+        log_query(QUERY_LOG_PATH, {"query": request.query, "variant": variant, "top_k": request.top_k, "candidate_k": retrieval_limit, "rerank_candidates": rerank_limit if use_reranker else 0, "hybrid": use_hybrid, "reranked": use_reranker, "brand": request.brand, "locale": request.locale, "result_count": len(results), "latency_ms": round(total_latency_ms, 3), **retrieval_timing, "rerank_ms": round(rerank_latency_ms, 3)})
         return payload
     except Exception as exc:
         METRICS.record_error()
