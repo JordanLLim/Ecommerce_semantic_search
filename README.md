@@ -169,7 +169,7 @@ A final local profile used 100 real held-out Amazon ESCI test queries, a preload
 | BM25 + FAISS RRF | 231.1 ms | 161.7 ms | 621.2 ms | 900.7 ms |
 | Hybrid + CrossEncoder | 366.1 ms | 300.0 ms | 757.9 ms | 957.8 ms |
 
-For the hybrid+rereanker path in that run, the CrossEncoder itself used 206.2 ms mean / 198.4 ms p50 / 328.6 ms p95. A separate run with 20 rerank candidates measured 352.8 ms mean / 332.5 ms p50 / 566.9 ms p95 for the reranker component. This shows the expected latency cost of widening the second-stage candidate set, but it does **not** establish a relevance winner because reranker quality was not separately evaluated for 10 vs 20 candidates. The service therefore keeps 20 as the quality-oriented default while exposing a request-level override for latency experiments.
+For the hybrid+reranker path in that run, the CrossEncoder itself used 206.2 ms mean / 198.4 ms p50 / 328.6 ms p95. A separate run with 20 rerank candidates measured 352.8 ms mean / 332.5 ms p50 / 566.9 ms p95 for the reranker component. This shows the expected latency cost of widening the second-stage candidate set, but it does **not** establish a relevance winner because reranker quality was not separately evaluated for 10 vs 20 candidates. The service therefore keeps 20 as the quality-oriented default while exposing a request-level override for latency experiments.
 
 The in-process BM25 path also shows broad-term tail-latency variability on the 1.3M catalog. This is documented as a deployment boundary rather than hidden: a production-scale system would normally move sparse retrieval to OpenSearch/Elasticsearch or another dedicated search engine instead of relying on a Python in-process postings index.
 
