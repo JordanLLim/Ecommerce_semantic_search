@@ -71,7 +71,7 @@ FAISS IVF is compared against exact `IndexFlatIP` using the same normalized embe
 
 ## Search pipeline
 
-The serving path supports persisted FAISS Flat/IVF indexes, independent in-process BM25 retrieval, RRF fusion, exact brand/locale filters, optional CrossEncoder reranking, a small preference-keyword hook, deterministic experiment assignment, process-local LRU caching, JSONL query telemetry, `/metrics`, and component latency profiling.
+The serving path supports persisted FAISS Flat/IVF indexes, independent in-process BM25 retrieval, RRF fusion, exact brand/locale filters, optional CrossEncoder reranking, deterministic experiment assignment, process-local LRU caching, JSONL query telemetry, `/metrics`, and component latency profiling.
 
 The current BM25 implementation is intentionally dependency-free for a reproducible portfolio deployment. It demonstrates a real independent sparse retrieval branch, but it is not presented as a replacement for distributed OpenSearch/Elasticsearch infrastructure at production traffic scale.
 
@@ -158,6 +158,20 @@ Useful endpoints: `GET /health`, `GET /metrics`, `POST /rank`, `POST /search`.
 - `scripts/benchmark_hybrid.py` — Dense vs BM25+FAISS RRF vs hybrid+CrossEncoder HTTP latency. Defaults to `http://127.0.0.1:8000` for reliable local Windows timing.
 - `scripts/benchmark_local_http.py` — diagnostic for localhost vs 127.0.0.1 transport overhead.
 - `scripts/benchmark_hnsw.py` — experimental Flat/HNSW comparison.
+
+### Local 100-query hybrid serving profile
+
+A final local profile used 100 real held-out Amazon ESCI test queries, a preloaded FastAPI process, `127.0.0.1`, explicit cache bypass, `candidate_k=50`, and a 1.3M-product catalog. The table below is one coherent run with 10 CrossEncoder rerank candidates; it is a local engineering profile, not a production SLA.
+
+| Mode | Backend mean | Backend p50 | Backend p95 | Backend p99 |
+| --- | ---: | ---: | ---: | ---: |
+| Dense FAISS | 139.4 ms | 87.6 ms | 350.6 ms | 548.3 ms |
+| BM25 + FAISS RRF | 231.1 ms | 161.7 ms | 621.2 ms | 900.7 ms |
+| Hybrid + CrossEncoder | 366.1 ms | 300.0 ms | 757.9 ms | 957.8 ms |
+
+For the hybrid+reranker path in that run, the CrossEncoder itself used 206.2 ms mean / 198.4 ms p50 / 328.6 ms p95. A separate run with 20 rerank candidates measured 352.8 ms mean / 332.5 ms p50 / 566.9 ms p95 for the reranker component. This shows the expected latency cost of widening the second-stage candidate set, but it does **not** establish a relevance winner because reranker quality was not separately evaluated for 10 vs 20 candidates. The service therefore keeps 20 as the quality-oriented default while exposing a request-level override for latency experiments.
+
+The in-process BM25 path also shows broad-term tail-latency variability on the 1.3M catalog. This is documented as a deployment boundary rather than hidden: a production-scale system would normally move sparse retrieval to OpenSearch/Elasticsearch or another dedicated search engine instead of relying on a Python in-process postings index.
 
 Relevance and latency are deliberately evaluated separately. A faster ANN index does not prove better relevance, and an offline NDCG improvement does not prove higher CTR or conversion.
 
