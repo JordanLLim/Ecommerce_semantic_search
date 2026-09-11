@@ -42,6 +42,7 @@ class SearchRequest(BaseModel):
     hybrid: bool = False
     hybrid_alpha: float = Field(default=0.8, ge=0.0, le=1.0)
     rerank: bool = False
+    rerank_candidate_k: int | None = Field(default=None, ge=1, le=500)
     user_keywords: list[str] = Field(default_factory=list, max_length=20)
     experiment_key: str | None = Field(default=None, max_length=200)
     bypass_cache: bool = False
@@ -76,7 +77,7 @@ async def lifespan(_app):
     yield
 
 
-app = FastAPI(title="Findly Semantic Search", version="2.3.0", lifespan=lifespan)
+app = FastAPI(title="Findly Semantic Search", version="2.3.1", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -117,7 +118,11 @@ def search(request: SearchRequest):
     started = perf_counter()
     try:
         retrieval_limit = max(request.candidate_k, request.top_k)
-        rerank_limit = min(retrieval_limit, max(request.top_k, RERANK_CANDIDATES)) if use_reranker else request.top_k
+        configured_rerank_limit = request.rerank_candidate_k or RERANK_CANDIDATES
+        rerank_limit = min(
+            retrieval_limit,
+            max(request.top_k, configured_rerank_limit),
+        ) if use_reranker else request.top_k
         engine = get_search_engine()
         results, retrieval_latency_ms = engine.search(request.query, top_k=retrieval_limit if use_reranker else request.top_k, candidate_k=retrieval_limit, brand=request.brand, locale=request.locale, hybrid=use_hybrid, hybrid_alpha=request.hybrid_alpha, user_keywords=request.user_keywords)
         retrieval_timing = dict(engine.last_timing)
@@ -131,7 +136,7 @@ def search(request: SearchRequest):
             results = results[: request.top_k]
 
         total_latency_ms = (perf_counter() - started) * 1000
-        payload = {"query": request.query, "variant": variant, "hybrid": use_hybrid, "reranked": use_reranker, "latency_ms": round(total_latency_ms, 3), "retrieval_latency_ms": round(retrieval_latency_ms, 3), "embedding_latency_ms": retrieval_timing.get("embedding_ms", 0.0), "faiss_latency_ms": retrieval_timing.get("faiss_ms", 0.0), "bm25_latency_ms": retrieval_timing.get("bm25_ms", 0.0), "postprocess_latency_ms": retrieval_timing.get("postprocess_ms", 0.0), "rerank_latency_ms": round(rerank_latency_ms, 3), "cache_hit": False, "results": results}
+        payload = {"query": request.query, "variant": variant, "hybrid": use_hybrid, "reranked": use_reranker, "latency_ms": round(total_latency_ms, 3), "retrieval_latency_ms": round(retrieval_latency_ms, 3), "embedding_latency_ms": retrieval_timing.get("embedding_ms", 0.0), "faiss_latency_ms": retrieval_timing.get("faiss_ms", 0.0), "bm25_latency_ms": retrieval_timing.get("bm25_ms", 0.0), "postprocess_latency_ms": retrieval_timing.get("postprocess_ms", 0.0), "rerank_latency_ms": round(rerank_latency_ms, 3), "rerank_candidate_k": rerank_limit if use_reranker else 0, "cache_hit": False, "results": results}
         if not request.bypass_cache:
             SEARCH_CACHE.set(key, payload)
         METRICS.record(total_latency_ms, variant=variant, cache_hit=False)
