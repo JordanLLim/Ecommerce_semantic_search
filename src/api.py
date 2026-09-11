@@ -8,6 +8,7 @@ from functools import lru_cache
 from time import perf_counter
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .ranking import rank_titles
@@ -22,6 +23,14 @@ QUERY_LOG_PATH = os.getenv("QUERY_LOG_PATH", "logs/search.jsonl")
 RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "20"))
 PRELOAD_INDEX = os.getenv("PRELOAD_INDEX", "0").lower() in {"1", "true", "yes"}
 WARMUP_QUERY = os.getenv("WARMUP_QUERY", "wireless keyboard")
+DEMO_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "DEMO_ORIGINS",
+        "http://127.0.0.1:5173,http://localhost:5173",
+    ).split(",")
+    if origin.strip()
+]
 
 SEARCH_CACHE = LRUCache(max_size=int(os.getenv("SEARCH_CACHE_SIZE", "256")))
 METRICS = SearchMetrics()
@@ -78,6 +87,13 @@ async def lifespan(_app):
 
 
 app = FastAPI(title="Findly Semantic Search", version="2.3.1", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=DEMO_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
 
 
 @app.get("/health")
