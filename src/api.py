@@ -44,6 +44,7 @@ class SearchRequest(BaseModel):
     rerank: bool = False
     user_keywords: list[str] = Field(default_factory=list, max_length=20)
     experiment_key: str | None = Field(default=None, max_length=200)
+    bypass_cache: bool = False
 
 
 @lru_cache(maxsize=1)
@@ -75,7 +76,7 @@ async def lifespan(_app):
     yield
 
 
-app = FastAPI(title="Findly Semantic Search", version="2.2.1", lifespan=lifespan)
+app = FastAPI(title="Findly Semantic Search", version="2.3.0", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -104,13 +105,14 @@ def search(request: SearchRequest):
     variant = assign_variant(request.experiment_key)
     use_hybrid = request.hybrid or variant == "enhanced"
     use_reranker = request.rerank or variant == "enhanced"
-    key_payload = request.model_dump()
+    key_payload = request.model_dump(exclude={"bypass_cache"})
     key_payload["resolved_variant"] = variant
     key = cache_key(key_payload)
-    cached = SEARCH_CACHE.get(key)
-    if cached is not None:
-        METRICS.record(cached["latency_ms"], variant=variant, cache_hit=True)
-        return {**cached, "cache_hit": True}
+    if not request.bypass_cache:
+        cached = SEARCH_CACHE.get(key)
+        if cached is not None:
+            METRICS.record(cached["latency_ms"], variant=variant, cache_hit=True)
+            return {**cached, "cache_hit": True}
 
     started = perf_counter()
     try:
@@ -130,9 +132,10 @@ def search(request: SearchRequest):
 
         total_latency_ms = (perf_counter() - started) * 1000
         payload = {"query": request.query, "variant": variant, "hybrid": use_hybrid, "reranked": use_reranker, "latency_ms": round(total_latency_ms, 3), "retrieval_latency_ms": round(retrieval_latency_ms, 3), "embedding_latency_ms": retrieval_timing.get("embedding_ms", 0.0), "faiss_latency_ms": retrieval_timing.get("faiss_ms", 0.0), "bm25_latency_ms": retrieval_timing.get("bm25_ms", 0.0), "postprocess_latency_ms": retrieval_timing.get("postprocess_ms", 0.0), "rerank_latency_ms": round(rerank_latency_ms, 3), "cache_hit": False, "results": results}
-        SEARCH_CACHE.set(key, payload)
+        if not request.bypass_cache:
+            SEARCH_CACHE.set(key, payload)
         METRICS.record(total_latency_ms, variant=variant, cache_hit=False)
-        log_query(QUERY_LOG_PATH, {"query": request.query, "variant": variant, "top_k": request.top_k, "candidate_k": retrieval_limit, "rerank_candidates": rerank_limit if use_reranker else 0, "hybrid": use_hybrid, "reranked": use_reranker, "brand": request.brand, "locale": request.locale, "result_count": len(results), "latency_ms": round(total_latency_ms, 3), **retrieval_timing, "rerank_ms": round(rerank_latency_ms, 3)})
+        log_query(QUERY_LOG_PATH, {"query": request.query, "variant": variant, "top_k": request.top_k, "candidate_k": retrieval_limit, "rerank_candidates": rerank_limit if use_reranker else 0, "hybrid": use_hybrid, "reranked": use_reranker, "brand": request.brand, "locale": request.locale, "result_count": len(results), "latency_ms": round(total_latency_ms, 3), **retrieval_timing, "rerank_ms": round(rerank_latency_ms, 3), "bypass_cache": request.bypass_cache})
         return payload
     except Exception as exc:
         METRICS.record_error()
