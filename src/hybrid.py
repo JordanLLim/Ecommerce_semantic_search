@@ -17,55 +17,50 @@ def tokenize(text: str) -> list[str]:
 class BM25Retriever:
     """Small dependency-free BM25 index aligned with product metadata rows.
 
-    The postings store precomputed per-document term contributions so the online
-    path only accumulates weights for query terms. This preserves the same BM25
-    scoring formula while avoiding repeated denominator math on every request.
+    This implementation keeps compact term-frequency postings and computes BM25
+    contributions at query time. It is intended for local/portfolio serving;
+    production deployments at larger scale would normally use a dedicated sparse
+    engine such as OpenSearch or Elasticsearch.
     """
 
     def __init__(self, documents, k1: float = 1.5, b: float = 0.75):
         self.k1 = k1
         self.b = b
-        lengths = []
-        raw_postings = defaultdict(list)
+        self.lengths = []
+        self.postings = defaultdict(list)
         document_frequency = Counter()
 
         for doc_id, text in enumerate(documents):
             terms = tokenize(text)
-            lengths.append(len(terms))
+            self.lengths.append(len(terms))
             counts = Counter(terms)
             for term, frequency in counts.items():
-                raw_postings[term].append((doc_id, frequency))
+                self.postings[term].append((doc_id, frequency))
                 document_frequency[term] += 1
 
-        self.document_count = len(lengths)
-        self.avg_length = sum(lengths) / max(1, self.document_count)
+        self.document_count = len(self.lengths)
+        self.avg_length = sum(self.lengths) / max(1, self.document_count)
         self.idf = {
             term: math.log(1.0 + (self.document_count - df + 0.5) / (df + 0.5))
             for term, df in document_frequency.items()
         }
-
-        self.postings = {}
-        avg_length = max(self.avg_length, 1e-9)
-        for term, entries in raw_postings.items():
-            idf = self.idf[term]
-            weighted = []
-            for doc_id, frequency in entries:
-                length = lengths[doc_id]
-                denominator = frequency + self.k1 * (
-                    1.0 - self.b + self.b * length / avg_length
-                )
-                weight = idf * (frequency * (self.k1 + 1.0)) / denominator
-                weighted.append((doc_id, weight))
-            self.postings[term] = weighted
 
     def search(self, query: str, top_k: int = 100):
         if top_k <= 0:
             return []
 
         scores = defaultdict(float)
+        avg_length = max(self.avg_length, 1e-9)
         for term in tokenize(query):
-            for doc_id, weight in self.postings.get(term, ()):
-                scores[doc_id] += weight
+            idf = self.idf.get(term)
+            if idf is None:
+                continue
+            for doc_id, frequency in self.postings.get(term, ()):
+                length = self.lengths[doc_id]
+                denominator = frequency + self.k1 * (
+                    1.0 - self.b + self.b * length / avg_length
+                )
+                scores[doc_id] += idf * (frequency * (self.k1 + 1.0)) / denominator
 
         if len(scores) <= top_k:
             return sorted(scores.items(), key=lambda item: item[1], reverse=True)
