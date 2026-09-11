@@ -36,6 +36,7 @@ class ProductSearch:
         self.index = index
         self.products = products
         self.settings = settings or {}
+        self.last_timing = {}
 
     @classmethod
     def load(cls, model_path, artifact_dir):
@@ -81,12 +82,7 @@ class ProductSearch:
         hybrid_alpha=0.8,
         user_keywords=None,
     ):
-        """Retrieve ANN candidates and optionally rescore/filter them.
-
-        Hybrid mode is deliberately lightweight: lexical overlap is fused with the
-        dense score inside the ANN candidate set. It is not an independent BM25
-        candidate generator.
-        """
+        """Retrieve ANN candidates and optionally rescore/filter them."""
         query = query.strip()
         if not query:
             raise ValueError("query must not be blank.")
@@ -96,14 +92,19 @@ class ProductSearch:
             raise ValueError("hybrid_alpha must be between 0 and 1.")
 
         effective_candidate_k = max(int(candidate_k or top_k), int(top_k))
-
         started = perf_counter()
+
+        encode_started = perf_counter()
         vector = self.model.encode(query, normalize_embeddings=True)
         vector = np.asarray(vector, dtype="float32").reshape(1, -1)
+        embedding_ms = (perf_counter() - encode_started) * 1000
 
         search_limit = min(effective_candidate_k, self.index.ntotal)
+        faiss_started = perf_counter()
         scores, indices = self.index.search(vector, search_limit)
+        faiss_ms = (perf_counter() - faiss_started) * 1000
 
+        post_started = perf_counter()
         keyword_tokens = _tokens(" ".join(user_keywords or []))
         candidates = []
         for score, index in zip(scores[0], indices[0]):
@@ -143,4 +144,12 @@ class ProductSearch:
         for rank, item in enumerate(results, start=1):
             item["rank"] = rank
 
-        return results, (perf_counter() - started) * 1000
+        postprocess_ms = (perf_counter() - post_started) * 1000
+        total_ms = (perf_counter() - started) * 1000
+        self.last_timing = {
+            "embedding_ms": round(embedding_ms, 3),
+            "faiss_ms": round(faiss_ms, 3),
+            "postprocess_ms": round(postprocess_ms, 3),
+            "retrieval_total_ms": round(total_ms, 3),
+        }
+        return results, total_ms
