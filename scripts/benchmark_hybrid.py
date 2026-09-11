@@ -1,8 +1,8 @@
 """Benchmark dense, hybrid RRF, and optional reranking through the search API.
 
-By default the script samples 100 real queries from the local Amazon ESCI examples
-parquet when it is available. It bypasses the serving cache, warms each mode once,
-and reports mean/p50/p95/p99 for HTTP, backend, and individual backend components.
+A full run samples real queries from the Amazon ESCI examples parquet, bypasses the
+serving cache, warms each mode once, and reports component latency percentiles. A
+10-query smoke run is still available explicitly with --smoke.
 """
 from __future__ import annotations
 
@@ -14,7 +14,11 @@ import time
 from pathlib import Path
 from urllib.request import Request, urlopen
 
-DEFAULT_QUERY_FILE = Path("data/raw/shopping_queries_dataset_examples.parquet")
+QUERY_FILE_CANDIDATES = [
+    Path("data/raw/shopping_queries_dataset_examples.parquet"),
+    Path("data/raw/shopping_queries_dataset/shopping_queries_dataset_examples.parquet"),
+    Path("data/shopping_queries_dataset_examples.parquet"),
+]
 SMOKE_QUERIES = [
     "gaming keyboard", "wireless mouse", "wireless headphones", "cooling fan",
     "toddler books", "makeup vanity", "tv stand", "baby bag", "mechanical keyboard",
@@ -43,6 +47,17 @@ def stats(values):
 def format_stats(name, values):
     s = stats(values)
     return f"{name}: mean={s['mean']:.1f} p50={s['p50']:.1f} p95={s['p95']:.1f} p99={s['p99']:.1f} ms"
+
+
+def discover_query_file(explicit: Path | None) -> Path | None:
+    if explicit is not None:
+        if not explicit.exists():
+            raise FileNotFoundError(f"Query file not found: {explicit}")
+        return explicit
+    for candidate in QUERY_FILE_CANDIDATES:
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def load_queries(path: Path, sample_size: int, seed: int, locale: str | None, split: str | None):
@@ -98,23 +113,34 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--api", default="http://127.0.0.1:8000")
     parser.add_argument("--candidate-k", type=int, default=50)
-    parser.add_argument("--query-file", type=Path, default=DEFAULT_QUERY_FILE)
+    parser.add_argument("--query-file", type=Path)
     parser.add_argument("--sample-size", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--locale", default="us")
     parser.add_argument("--split", default="test")
     parser.add_argument("--queries", nargs="*")
+    parser.add_argument("--smoke", action="store_true", help="Use the built-in 10-query smoke set")
+    parser.add_argument("--top-slowest", type=int, default=5)
     args = parser.parse_args()
 
     if args.queries:
         queries = args.queries
         source = "explicit --queries"
-    elif args.query_file.exists():
-        queries = load_queries(args.query_file, args.sample_size, args.seed, args.locale, args.split)
-        source = str(args.query_file)
-    else:
+    elif args.smoke:
         queries = SMOKE_QUERIES
         source = "built-in 10-query smoke set"
+    else:
+        query_file = discover_query_file(args.query_file)
+        if query_file is None:
+            searched = "\n  - ".join(str(path) for path in QUERY_FILE_CANDIDATES)
+            raise SystemExit(
+                "Real-query benchmark requires shopping_queries_dataset_examples.parquet.\n"
+                f"Searched:\n  - {searched}\n"
+                "Place the file in one of those locations, pass --query-file <path>, "
+                "or use --smoke for the intentional 10-query smoke test."
+            )
+        queries = load_queries(query_file, args.sample_size, args.seed, args.locale, args.split)
+        source = str(query_file)
 
     print(f"Query source: {source}")
     print(f"Benchmark queries: {len(queries)}")
@@ -130,27 +156,31 @@ def main():
         call(args.api, "wireless keyboard", hybrid, rerank, args.candidate_k)
 
         values = {
-            "http": [],
-            "backend": [],
-            "embedding": [],
-            "faiss": [],
-            "bm25": [],
-            "postprocess": [],
-            "rerank": [],
-            "transport": [],
+            "http": [], "backend": [], "embedding": [], "faiss": [],
+            "bm25": [], "postprocess": [], "rerank": [], "transport": [],
         }
+        rows = []
 
         for index, query in enumerate(queries, start=1):
             body, elapsed = call(args.api, query, hybrid, rerank, args.candidate_k)
             backend = float(body["latency_ms"])
+            embedding = float(body.get("embedding_latency_ms", 0.0))
+            faiss = float(body.get("faiss_latency_ms", 0.0))
+            bm25 = float(body.get("bm25_latency_ms", 0.0))
+            postprocess = float(body.get("postprocess_latency_ms", 0.0))
+            rerank_ms = float(body.get("rerank_latency_ms", 0.0))
+            transport = elapsed - backend
+
             values["http"].append(elapsed)
             values["backend"].append(backend)
-            values["embedding"].append(float(body.get("embedding_latency_ms", 0.0)))
-            values["faiss"].append(float(body.get("faiss_latency_ms", 0.0)))
-            values["bm25"].append(float(body.get("bm25_latency_ms", 0.0)))
-            values["postprocess"].append(float(body.get("postprocess_latency_ms", 0.0)))
-            values["rerank"].append(float(body.get("rerank_latency_ms", 0.0)))
-            values["transport"].append(elapsed - backend)
+            values["embedding"].append(embedding)
+            values["faiss"].append(faiss)
+            values["bm25"].append(bm25)
+            values["postprocess"].append(postprocess)
+            values["rerank"].append(rerank_ms)
+            values["transport"].append(transport)
+            rows.append((backend, query, embedding, faiss, bm25, postprocess, rerank_ms, transport))
+
             if index % 25 == 0 or index == len(queries):
                 print(f"  {index}/{len(queries)} queries", flush=True)
 
@@ -163,6 +193,15 @@ def main():
         print(format_stats("Postprocess", values["postprocess"]))
         print(format_stats("Rerank", values["rerank"]))
         print(format_stats("HTTP outside backend", values["transport"]))
+
+        if args.top_slowest > 0:
+            print(f"Slowest {min(args.top_slowest, len(rows))} backend queries:")
+            for backend, query, embedding, faiss, bm25, postprocess, rerank_ms, transport in sorted(rows, reverse=True)[: args.top_slowest]:
+                print(
+                    f"  {backend:8.1f} ms | emb={embedding:7.1f} faiss={faiss:7.1f} "
+                    f"bm25={bm25:7.1f} post={postprocess:7.1f} rerank={rerank_ms:7.1f} "
+                    f"transport={transport:7.1f} | {query}"
+                )
 
 
 if __name__ == "__main__":
