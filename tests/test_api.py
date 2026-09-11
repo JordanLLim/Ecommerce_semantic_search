@@ -13,7 +13,7 @@ class FakeModel:
 
 
 class FakeSearchEngine:
-    def search(self, query, top_k):
+    def search(self, query, top_k=10, **kwargs):
         return [{"rank": 1, "product_id": "p1", "title": "match", "score": 1.0}], 2.3456
 
 
@@ -33,7 +33,8 @@ class ApiTests(unittest.TestCase):
     def test_search_response(self, _):
         response = search(SearchRequest(query="query", top_k=1))
         self.assertEqual(response["results"][0]["product_id"], "p1")
-        self.assertEqual(response["latency_ms"], 2.346)
+        self.assertEqual(response["retrieval_latency_ms"], 2.346)
+        self.assertFalse(response["reranked"])
 
 
 if __name__ == "__main__":

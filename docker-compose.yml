@@ -7,11 +7,14 @@ services:
       ARTIFACT_DIR: /app/artifacts
       QUERY_LOG_PATH: /app/logs/search.jsonl
       SEARCH_CACHE_SIZE: 256
+      PRELOAD_INDEX: 1
+      RERANK_CANDIDATES: 20
     volumes:
       - ./artifacts:/app/artifacts:ro
       - ./logs:/app/logs
     ports:
       - "8000:8000"
+    restart: unless-stopped
 
   ui:
     build:
@@ -23,3 +26,4 @@ services:
       - api
     ports:
       - "8501:8501"
+    restart: unless-stopped

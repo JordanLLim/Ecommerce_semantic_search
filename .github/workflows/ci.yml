@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, faiss-benchmark, streamlit-demo]
+    branches: [main, faiss-benchmark, storefront-ui, production-storefront]
   pull_request:
 
 jobs:
