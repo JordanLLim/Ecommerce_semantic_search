@@ -1,0 +1,1 @@
+Temporary staging note; the canonical instructions will be moved into README on the follow-up branch.
