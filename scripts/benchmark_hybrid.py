@@ -71,13 +71,14 @@ def load_queries(path: Path, sample_size: int, seed: int, locale: str | None, sp
     return queries[: min(sample_size, len(queries))]
 
 
-def call(api, query, hybrid, rerank, candidate_k):
+def call(api, query, hybrid, rerank, candidate_k, rerank_candidate_k):
     payload = json.dumps({
         "query": query,
         "top_k": 10,
         "candidate_k": candidate_k,
         "hybrid": hybrid,
         "rerank": rerank,
+        "rerank_candidate_k": rerank_candidate_k if rerank else None,
         "bypass_cache": True,
     }).encode()
     req = Request(
@@ -98,6 +99,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--api", default="http://127.0.0.1:8000")
     parser.add_argument("--candidate-k", type=int, default=50)
+    parser.add_argument("--rerank-candidates", type=int, default=20)
     parser.add_argument("--query-file", type=Path, default=DEFAULT_QUERY_FILE)
     parser.add_argument("--sample-size", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
@@ -118,6 +120,7 @@ def main():
 
     print(f"Query source: {source}")
     print(f"Benchmark queries: {len(queries)}")
+    print(f"Rerank candidates: {args.rerank_candidates}")
 
     modes = [
         ("dense", False, False),
@@ -127,7 +130,7 @@ def main():
 
     for name, hybrid, rerank in modes:
         print(f"\nWarming {name}...", flush=True)
-        call(args.api, "wireless keyboard", hybrid, rerank, args.candidate_k)
+        call(args.api, "wireless keyboard", hybrid, rerank, args.candidate_k, args.rerank_candidates)
 
         values = {
             "http": [],
@@ -141,7 +144,7 @@ def main():
         }
 
         for index, query in enumerate(queries, start=1):
-            body, elapsed = call(args.api, query, hybrid, rerank, args.candidate_k)
+            body, elapsed = call(args.api, query, hybrid, rerank, args.candidate_k, args.rerank_candidates)
             backend = float(body["latency_ms"])
             values["http"].append(elapsed)
             values["backend"].append(backend)
