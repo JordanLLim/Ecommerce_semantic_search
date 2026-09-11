@@ -124,8 +124,10 @@ $env:PRELOAD_INDEX="1"; uvicorn src.api:app --host 0.0.0.0 --port 8000
 Wait for `Application startup complete.` before starting the UI or running benchmarks. In another PowerShell window:
 
 ```powershell
-$env:API_URL="http://localhost:8000"; streamlit run app.py
+$env:API_URL="http://127.0.0.1:8000"; streamlit run app.py
 ```
+
+On the Windows machine used for local profiling, `http://localhost:8000/health` incurred about 2 seconds of transport overhead while `http://127.0.0.1:8000/health` returned in about 12 ms on average. For local Windows benchmarks, use `127.0.0.1` so proxy/PAC or hostname-resolution behavior is not mixed into search latency.
 
 ### Linux / macOS
 
@@ -144,7 +146,7 @@ Docker Compose already enables backend preloading. More detail is in `docs/LOCAL
 ### API example
 
 ```bash
-curl -X POST http://localhost:8000/search -H "Content-Type: application/json" -d '{"query":"quiet cooling fan","top_k":10,"candidate_k":50,"hybrid":true,"rerank":true}'
+curl -X POST http://127.0.0.1:8000/search -H "Content-Type: application/json" -d '{"query":"quiet cooling fan","top_k":10,"candidate_k":50,"hybrid":true,"rerank":true}'
 ```
 
 Useful endpoints: `GET /health`, `GET /metrics`, `POST /rank`, `POST /search`.
@@ -153,7 +155,8 @@ Useful endpoints: `GET /health`, `GET /metrics`, `POST /rank`, `POST /search`.
 
 - `scripts/benchmark_faiss.py` — Flat vs IVF ANN approximation and batch timing.
 - `scripts/benchmark_serving_latency.py` — one-query-at-a-time backend latency.
-- `scripts/benchmark_hybrid.py` — Dense vs BM25+FAISS RRF vs hybrid+CrossEncoder HTTP latency.
+- `scripts/benchmark_hybrid.py` — Dense vs BM25+FAISS RRF vs hybrid+CrossEncoder HTTP latency. Defaults to `http://127.0.0.1:8000` for reliable local Windows timing.
+- `scripts/benchmark_local_http.py` — diagnostic for localhost vs 127.0.0.1 transport overhead.
 - `scripts/benchmark_hnsw.py` — experimental Flat/HNSW comparison.
 
 Relevance and latency are deliberately evaluated separately. A faster ANN index does not prove better relevance, and an offline NDCG improvement does not prove higher CTR or conversion.

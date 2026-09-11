@@ -2,6 +2,8 @@
 
 Run the API with PRELOAD_INDEX=1 first. Each mode gets an unmeasured warm-up request so
 one-time model or sparse-index construction is not mixed into steady-state latency.
+On Windows, 127.0.0.1 is used by default because localhost can inherit slow proxy/PAC
+resolution on some machines and distort local HTTP timing.
 """
 from __future__ import annotations
 import argparse, json, statistics, time
@@ -30,7 +32,7 @@ def call(api, query, hybrid, rerank, candidate_k):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--api", default="http://localhost:8000")
+    parser.add_argument("--api", default="http://127.0.0.1:8000")
     parser.add_argument("--candidate-k", type=int, default=50)
     parser.add_argument("--queries", nargs="*", default=DEFAULT_QUERIES)
     args = parser.parse_args()
