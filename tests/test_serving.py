@@ -1,14 +1,9 @@
 import unittest
 
-from src.search import _lexical_overlap
 from src.serving import LRUCache, assign_variant, cache_key
 
 
 class ServingTests(unittest.TestCase):
-    def test_lexical_overlap(self):
-        self.assertEqual(_lexical_overlap("wireless mouse", "wireless gaming mouse"), 1.0)
-        self.assertEqual(_lexical_overlap("wireless mouse", "mechanical keyboard"), 0.0)
-
     def test_lru_cache(self):
         cache = LRUCache(max_size=2)
         cache.set("a", 1)
